@@ -120,6 +120,15 @@ decision → rationale/alternatives.
   (`JsonFormatMapperConfiguration`), because Hibernate's default Jackson 3 mapper reads JSON
   numbers as double nodes. End-to-end precision is proven by `EventApiControllerTest`
   (`1.00000000000000000001` stored and returned exactly; posting `1` for the same eventId → 409).
+- Review round 2 (2026-10-18): metadata numbers are bounded at validation by `@ValidMetadata` —
+  at most 1000 integer and 1000 fractional digits in canonical (trailing-zeros-stripped) decimal
+  form, computed from `BigDecimal.precision()/scale()` in O(1), so a literal like `1e2000000000`
+  is rejected before any allocation. The read side is aligned at 4096 characters
+  (`max-number-length` for MVC and for Hibernate's `FormatMapper`), comfortably above the 2002
+  characters the bounds allow, so every accepted number survives the jsonb read-back. The
+  validator reuses the hasher's `canonicalNumber()`, so validation and hashing cannot drift.
+  BigDecimal values are rendered as plain decimals (no exponent notation) on both mappers; JSON
+  object key order is not significant and may be normalized by jsonb (review round 2 F4).
 - Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
   Rejected: hashing raw request bytes (formatting changes would break idempotency).
 
@@ -148,11 +157,19 @@ decision → rationale/alternatives.
   to UTC and truncated to microseconds before storage, so the 201 response and later re-reads
   render identically.
 - Errors: 400 Problem Details with a sorted `errors` list (field, message) for Bean Validation and
-  unreadable bodies (malformed JSON, oversized number literals → 400, never 500); 409 as above;
-  unexpected errors → generic 500 (logged, no internals in the body). Framework 4xx keep the same
-  Problem Details shape through `ResponseEntityExceptionHandler`.
-- Validation: `eventId`/`userId`/`eventType`/`source` not blank, max 128; `occurredAt` strict
-  ISO-8601 with offset; `metadata` any JSON value; absent ≡ null.
+  unreadable bodies (malformed JSON, oversized number literals → 400, never 500); 400 also for
+  request content PostgreSQL rejects as a data exception (SQLState class 22: NUL characters,
+  numeric overflow) with a generic detail; 409 as above; unexpected errors → generic 500 (logged,
+  no internals in the body). Framework errors raised while handling `POST /api/v1/events` keep the
+  same Problem Details shape through `ResponseEntityExceptionHandler`; a 405 is raised during
+  handler mapping, outside the controller-scoped advice.
+- Validation: `eventId`/`userId`/`eventType`/`source` not blank, max 128; `occurredAt` ISO-8601
+  offset date-time as accepted by `OffsetDateTime.parse` (an offset is required; fractional
+  seconds optional); `metadata` any JSON value, bounded to 1000 integer and 1000 fractional digits
+  per number in canonical decimal form (`@ValidMetadata`); absent ≡ null.
+- Rendering: BigDecimal numbers are written as plain decimals (no exponent notation) on both the
+  MVC and Hibernate mappers, so `1e2` renders as `100`; JSON object key order is not significant
+  and jsonb may normalize it on read-back.
 - Mechanics: hash before insert; insert in a dedicated `REQUIRES_NEW` transaction
   (`EventInsertService` via `TransactionTemplate`) so a unique violation cannot poison an outer
   transaction; on SQLState 23505 (found in the cause chain — Spring ORM 7 translates it to a
