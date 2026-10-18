@@ -538,6 +538,38 @@ Run the whole suite (requires Docker for Testcontainers; no pre-started database
 ./mvnw verify
 ```
 
+### End-to-end tests (demo page)
+
+Milestone 9.7 adds a Playwright for Java suite that drives a real Chromium against the
+[browser demo](#2-browser-demo-t62) page, behind an opt-in Maven profile so the default
+build is untouched:
+
+```bash
+./mvnw -B -Pe2e verify
+```
+
+The profile carries all E2E wiring (the `com.microsoft.playwright:playwright` test
+dependency, the `src/e2e/java` test source root, and a Surefire filter that runs only
+`**/*E2ETest.java`); the default `./mvnw verify` compiles none of it and downloads no
+browser. `./mvnw -B -Pe2e verify` is self-contained: it boots the real application on a
+random port with Testcontainers PostgreSQL, exactly like the integration tests.
+
+First run note: the E2E test class installs Chromium on demand (a one-time ~300 MB
+download into Playwright's browser cache; afterwards the run is offline-safe).
+
+What the suite covers (each test uses a fresh browser context and a unique `userId`
+filter, so they pass in any order against the shared events table): the page loads and
+shows its initial state; with the key typed into the page's own input field, seeded
+events are listed; the "Load more" cursor walk appends pages without gaps or duplicates
+(page size driven through the page's `size` field); the `eventType` filter narrows the
+list; and a wrong key renders the 401 Problem Details in the page's error box. Failing
+tests record a Playwright trace under `target/playwright-traces/`.
+
+CI runs the suite as a **manually triggered workflow only**
+(`.github/workflows/e2e.yml`, `workflow_dispatch` in the Actions tab, ubuntu-latest,
+Temurin 21) and uploads the traces and Surefire reports as artefacts; the push/PR
+pipeline is unchanged.
+
 The suite (JUnit 5; the integration classes use Testcontainers against the pinned
 `postgres:18-alpine` image and real HTTP on a random port, the rest are pure unit tests) covers,
 per class:

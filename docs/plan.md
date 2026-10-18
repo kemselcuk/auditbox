@@ -5,7 +5,9 @@ tests are green.
 
 > Post-handoff M9 enhancements (CI, container, single fetch, metrics, correlation IDs, SBOM)
 > are recorded in D16 and the README; the stage tables below describe the original delivered
-> scope.
+> scope. M9.7 (Playwright E2E suite for the demo page, D17) is delivered behind the opt-in
+> `-Pe2e` Maven profile: `./mvnw -B -Pe2e verify` runs 5 E2E tests against a real Chromium,
+> while the default `./mvnw verify` keeps compiling nothing E2E-related and stays at 227 tests.
 
 **Verification loop per task:** brief → implementation by a delegated GLM-5.3-Flash child task →
 the orchestrator reviews the diff and runs the tests personally → fix rounds if needed → status

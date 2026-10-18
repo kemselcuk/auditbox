@@ -370,3 +370,9 @@ decision → rationale/alternatives.
 - Consequences: the E2E run downloads a Chromium build (~300 MB, free) on first use; it is not
   part of the default `verify` and its CI wiring must not slow the push pipeline. The suite is
   delivered as M9.7 and its evidence recorded in the README/plan.
+- Delivered (M9.7, 2026-10-19): profile `e2e` in `pom.xml` (Playwright 1.63.0 test-scoped,
+  `src/e2e/java` added via build-helper-maven-plugin, Surefire limited to `**/*E2ETest.java`);
+  `DemoPageE2ETest` (5 tests, Testcontainers
+  PostgreSQL, real Chromium, trace-on-failure under `target/playwright-traces`); manually
+  triggered `.github/workflows/e2e.yml`. Default `./mvnw -B verify` re-verified: 227 tests,
+  BUILD SUCCESS; `./mvnw -B -Pe2e verify`: 5 tests, BUILD SUCCESS.

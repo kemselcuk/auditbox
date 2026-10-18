@@ -140,4 +140,68 @@
 		</plugins>
 	</build>
 
+	<!-- Milestone 9.7: Playwright end-to-end suite for the static demo page, fully
+	     opt-in. Everything E2E-related lives ONLY inside this profile: the Playwright
+	     dependency (classpath), the src/e2e/java test source root (added via
+	     build-helper-maven-plugin; the default build never compiles it), and a Surefire
+	     include filter so `./mvnw -B -Pe2e verify` executes only the E2E tests while the
+	     default `./mvnw verify` keeps running the existing suite unchanged (227 tests,
+	     no browser download, no extra artifacts). -->
+	<profiles>
+		<profile>
+			<id>e2e</id>
+			<!-- Playwright for Java. 1.63.0 is the newest stable release per the
+			     artifact's maven-metadata.xml on Maven Central (fetched live). -->
+			<dependencies>
+				<dependency>
+					<groupId>com.microsoft.playwright</groupId>
+					<artifactId>playwright</artifactId>
+					<version>1.63.0</version>
+					<scope>test</scope>
+				</dependency>
+			</dependencies>
+			<build>
+				<plugins>
+					<!-- Adds src/e2e/java as an additional *test* source root. Only
+					     active under -Pe2e, so the default build never sees (or
+					     compiles) the E2E sources. For the same reason (profile-only
+					     wiring) the Spring Boot parent's version management does not
+					     pin build-helper-maven-plugin: 3.6.2 is the newest release
+					     per Maven Central. -->
+					<plugin>
+						<groupId>org.codehaus.mojo</groupId>
+						<artifactId>build-helper-maven-plugin</artifactId>
+						<version>3.6.2</version>
+						<executions>
+							<execution>
+								<id>add-e2e-test-source</id>
+								<phase>generate-test-sources</phase>
+								<goals>
+									<goal>add-test-source</goal>
+								</goals>
+								<configuration>
+									<sources>
+										<source>src/e2e/java</source>
+									</sources>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
+					<!-- Under this profile Surefire runs only the E2E tests; the
+					     existing unit/integration suite keeps its own run under the
+					     default build (which has no include filter from here). -->
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-surefire-plugin</artifactId>
+						<configuration>
+							<includes>
+								<include>**/*E2ETest.java</include>
+							</includes>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
+
 </project>

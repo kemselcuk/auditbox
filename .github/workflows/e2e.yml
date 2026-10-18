@@ -1,0 +1,46 @@
+# E2E (Milestone 9.7): Playwright end-to-end tests for the static demo page,
+# behind the opt-in `e2e` Maven profile (Chromium download, D17). This workflow
+# is manually triggered only — the push/PR pipeline (ci.yml) is unchanged and
+# never downloads a browser.
+name: E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Self-contained: the profile boots the app on a random port with a
+      # Testcontainers PostgreSQL. The test class installs Chromium itself
+      # (cached after the first run).
+      - name: Run E2E tests
+        run: ./mvnw -B -Pe2e verify
+
+      - name: Upload Playwright traces
+        # Only failing tests leave a trace zip (successful tests delete theirs).
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: target/playwright-traces
+          if-no-files-found: ignore
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: target/surefire-reports
+          if-no-files-found: ignore
