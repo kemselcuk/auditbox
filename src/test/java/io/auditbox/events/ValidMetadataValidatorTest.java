@@ -3,6 +3,7 @@ package io.auditbox.events;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Set;
 
 import jakarta.validation.ConstraintViolation;
@@ -20,9 +21,10 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 
 /**
- * Plain unit tests for the metadata number-bound validator (review round 2, F1/F2): no
- * Spring context, no containers. Boundaries are asserted from the canonical digit rule —
- * trailing zeros stripped exactly as the content hash canonicalizes (D10) — and the
+ * Plain unit tests for the metadata number-bound validator (review round 2, F1/F2; re-review
+ * blockers B1/B2): no Spring context, no containers. Boundaries are asserted from the digit
+ * rules — canonical (trailing zeros stripped, exactly as the content hash canonicalizes, D10)
+ * and stored (the instance as parsed, with the literal's scale kept) — and the
  * excessive-exponent cases are asserted to reject without any large-number expansion.
  */
 class ValidMetadataValidatorTest {
@@ -114,6 +116,52 @@ class ValidMetadataValidatorTest {
 	void rejectsAHugeNegativeExponentWithoutAnyLargeAllocation() {
 		// The fractional twin: scale 2000000000 exceeds the fraction bound alone.
 		assertThat(valid("{\"n\":1e-2000000000}")).isFalse();
+	}
+
+	@Test
+	void rejectsAnExponentThatOverflowsThirtyTwoBitDigitArithmetic() {
+		// B2: 1e2147483647 has precision 1 and scale -2147483647. In 32-bit arithmetic
+		// precision - scale wraps to Integer.MIN_VALUE and passed every bound; the hash then
+		// called toPlainString() on the unbounded value (OOM). Long arithmetic computes
+		// 2147483648 integer digits and rejects in constant time.
+		assertThat(valid("{\"n\":1e2147483647}")).isFalse();
+	}
+
+	@Test
+	void rejectsAnIntOverflowingExponentBuiltProgrammatically() {
+		// Same overflow through a hand-built BigDecimal, independent of the JSON parser's
+		// exponent handling: unscaled 1, scale Integer.MIN_VALUE + 1.
+		JsonNode node = JsonNodeFactory.instance.objectNode().set("n", JsonNodeFactory.instance
+				.numberNode(new BigDecimal(BigInteger.ONE, -2147483647)));
+		assertThat(valid(node)).isFalse();
+	}
+
+	@Test
+	void acceptsAStoredFormOfExactlyFourThousandDigits() {
+		// B1 boundary. For the literal "1." + "0".repeat(n) + "e-999" the parsed instance has
+		// precision n + 1 and scale n + 999, so the stored plain form has
+		// max(precision - scale, 0) + max(scale, 0) = n + 999 digits, while the canonical
+		// form is always 1e-999 (999 fractional digits, inside the canonical bounds).
+		// n = 3001: exactly 4000 stored digits — at the stored-form bound, accepted. The
+		// rendering is 4002 characters ("0." plus the digits), under the 4096 read limit.
+		assertThat(valid("{\"n\":1." + "0".repeat(3001) + "e-999}")).isTrue();
+	}
+
+	@Test
+	void rejectsAStoredFormOfFourThousandAndOneDigitsDespiteASmallCanonicalForm() {
+		// n = 3002: 4001 stored digits — beyond the stored-form bound while the canonical
+		// form (999 fractional digits) is still inside the canonical bounds: only the
+		// stored-form check rejects this literal.
+		assertThat(valid("{\"n\":1." + "0".repeat(3002) + "e-999}")).isFalse();
+	}
+
+	@Test
+	void rejectsAStoredFormAboveTheReadLimitThatTheCanonicalBoundsAccept() {
+		// The exact shape from re-review B1: n = 3098 renders to 4099 plain characters
+		// (4097 stored digits plus "0.") — above the 4096-character read limit, so before
+		// the stored-form bound existed it passed the canonical bounds and failed the jsonb
+		// insert itself with a 500. The literal itself is under 4096 characters and parses.
+		assertThat(valid("{\"n\":1." + "0".repeat(3098) + "e-999}")).isFalse();
 	}
 
 	@Test

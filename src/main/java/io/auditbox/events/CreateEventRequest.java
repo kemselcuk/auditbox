@@ -60,8 +60,9 @@ public record CreateEventRequest(
 
 		@ValidMetadata
 		@Schema(description = "Optional metadata: any JSON value. Absent and explicit null are the same content "
-				+ "(D10). Client decimals are preserved exactly, bounded to the supported canonical "
-				+ "digit counts (1000 integer / 1000 fractional digits).",
+				+ "(D10). Client decimals are preserved exactly, bounded to the supported digit counts: at most "
+				+ "1000 integer / 1000 fractional digits in canonical decimal form and 4000 total digits in the "
+				+ "stored (unstripped) form.",
 				example = "{\"amount\":125.50,\"currency\":\"EUR\"}")
 		JsonNode metadata) {
 }

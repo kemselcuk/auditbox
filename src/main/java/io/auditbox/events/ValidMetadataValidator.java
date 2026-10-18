@@ -8,22 +8,39 @@ import jakarta.validation.ConstraintValidatorContext;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Walks the metadata JSON tree and rejects any number whose canonical decimal form
- * (trailing zeros stripped, the same rule {@link EventContentHasher} applies, D10) exceeds
- * {@value #MAX_INTEGER_DIGITS} integer digits or {@value #MAX_FRACTIONAL_DIGITS} fractional
- * digits (review round 2, F1/F2).
+ * Walks the metadata JSON tree and rejects any number that
+ * <ul>
+ *   <li>exceeds {@value #MAX_INTEGER_DIGITS} integer digits or {@value #MAX_FRACTIONAL_DIGITS}
+ *       fractional digits in its <em>canonical</em> decimal form (trailing zeros stripped, the
+ *       same rule {@link EventContentHasher} applies, D10), or</li>
+ *   <li>exceeds {@value #MAX_STORED_DIGITS} total plain digits (integer + fractional) in its
+ *       <em>stored</em> form — the exact instance as parsed, with the literal's scale kept
+ *       (review round 2 re-review, B1).</li>
+ * </ul>
  *
  * <h2>Bound logic</h2>
  *
- * <p>For a {@link BigDecimal} {@code v}, digits of the canonical plain decimal form can be
- * computed from {@code precision()} and {@code scale()} alone, without materializing the
- * string: {@code v} is {@code unscaledValue × 10^(-scale)}, so a scale {@code < 0} means the
- * canonical plain form gains characters beyond the unscaled digits ({@code 1e999} has
- * unscaled 1, scale -999 → 1000 integer digits) and a scale {@code > 0} means exactly
- * {@code scale} fractional digits ({@code 1e-1000} has scale 1000 → 1000 fractional digits).
- * A huge exponent therefore rejects in constant time — {@code 1e2000000000} has precision 1,
- * scale -2000000000, i.e. 2000000001 integer digits — and no {@code toPlainString()} is ever
- * called on an unbounded value, so no large allocation can happen before rejection.
+ * <p>For a {@link BigDecimal} {@code v}, digits of the plain decimal form can be computed from
+ * {@code precision()} and {@code scale()} alone, without materializing the string: {@code v} is
+ * {@code unscaledValue × 10^(-scale)}, so a scale {@code < 0} means the plain form gains
+ * characters beyond the unscaled digits ({@code 1e999} has unscaled 1, scale -999 &rarr; 1000
+ * integer digits) and a scale {@code > 0} means exactly {@code scale} fractional digits
+ * ({@code 1e-1000} has scale 1000 &rarr; 1000 fractional digits).
+ *
+ * <p>All digit arithmetic is done in {@code long}: in 32-bit arithmetic,
+ * {@code 1e2147483647} (precision 1, scale -2147483647) wraps {@code precision - scale} to a
+ * negative number that would pass every bound, and the hash would then try to materialize a
+ * 2147483648-digit plain string (B2). In {@code long} arithmetic a huge exponent rejects in
+ * constant time — no {@code toPlainString()} is ever called on an unbounded value, so no
+ * large allocation can happen before rejection.
+ *
+ * <p>Why the stored instance needs its own bound (B1): parsing keeps the literal's scale, so
+ * trailing zeros survive — {@code 1.000…0e-999} canonicalizes to 999 fractional digits
+ * (accepted by the canonical bounds) yet its stored plain form has thousands of digits.
+ * Hibernate deep-copies the {@code JsonNode} through the {@code FormatMapper} on save
+ * (serialize + re-parse), so a stored form above the 4096-character read constraint of
+ * {@link JsonFormatMapperConfiguration} fails the insert itself with a 500 instead of a 400.
+ * Bounding the instance's total plain digits keeps every accepted value under that read limit.
  *
  * <p>The exact decimal is extracted with {@link EventContentHasher#canonicalNumber}, so the
  * validator judges exactly the values the content hash canonicalizes — validation and hash
@@ -36,6 +53,14 @@ public class ValidMetadataValidator implements ConstraintValidator<ValidMetadata
 
 	/** Maximum fractional digits of a metadata number in canonical (trailing-zeros-stripped) decimal form. */
 	public static final int MAX_FRACTIONAL_DIGITS = 1000;
+
+	/**
+	 * Maximum total plain decimal digits (integer + fractional) of a metadata number in its
+	 * stored form — the instance as parsed, unstripped (B1). 4000 digits render as at most
+	 * 4002 characters ({@code 0.} plus the digits), safely under the 4096-character read
+	 * constraint the value must survive on every Hibernate round trip.
+	 */
+	public static final int MAX_STORED_DIGITS = 4000;
 
 	@Override
 	public boolean isValid(JsonNode metadata, ConstraintValidatorContext context) {
@@ -66,19 +91,44 @@ public class ValidMetadataValidator implements ConstraintValidator<ValidMetadata
 	}
 
 	/**
-	 * Bounds a single number from its canonical {@code precision()}/{@code scale()} in
-	 * constant time and memory: the exponent form {@code 1e2000000000} never materializes
-	 * its 2000-million-digit plain rendering (F1/F2).
+	 * Bounds a single number from its canonical and its stored {@code precision()}/{@code
+	 * scale()} in constant time and memory: the exponent form {@code 1e2000000000} never
+	 * materializes its 2000-million-digit plain rendering (F1/F2, B1/B2).
 	 */
 	private boolean numberWithinBounds(JsonNode node) {
-		BigDecimal value = EventContentHasher.canonicalNumber(node).stripTrailingZeros();
-		int scale = value.scale();
-		int integerDigits = scale < 0
-				// scale < 0: the plain form is the unscaled digits padded with -scale zeros
-				// (1e999 = unscaled 1, scale -999 = 1000 integer digits).
-				? value.precision() - scale
-				// A canonical value < 1 ("0.5", "1e-1000") contributes no integer digits.
-				: Math.max(value.precision() - scale, 0);
-		return integerDigits <= MAX_INTEGER_DIGITS && Math.max(scale, 0) <= MAX_FRACTIONAL_DIGITS;
+		BigDecimal raw = EventContentHasher.canonicalNumber(node);
+		return canonicalFormWithinBounds(raw) && storedFormWithinBounds(raw);
+	}
+
+	/**
+	 * Bounds the canonical (trailing-zeros-stripped) form — the form the content hash
+	 * canonicalizes to (D10): at most {@link #MAX_INTEGER_DIGITS} integer and
+	 * {@link #MAX_FRACTIONAL_DIGITS} fractional digits.
+	 */
+	private boolean canonicalFormWithinBounds(BigDecimal value) {
+		BigDecimal canonical = value.stripTrailingZeros();
+		long scale = canonical.scale();
+		return integerDigits(canonical.precision(), scale) <= MAX_INTEGER_DIGITS
+				&& Math.max(scale, 0) <= MAX_FRACTIONAL_DIGITS;
+	}
+
+	/**
+	 * Bounds the stored form — the exact instance as parsed, with the literal's scale kept
+	 * (B1): at most {@link #MAX_STORED_DIGITS} total plain digits, so every accepted value
+	 * renders below the 4096-character read constraint on every Hibernate round trip.
+	 */
+	private boolean storedFormWithinBounds(BigDecimal value) {
+		long scale = value.scale();
+		return integerDigits(value.precision(), scale) + Math.max(scale, 0) <= MAX_STORED_DIGITS;
+	}
+
+	/**
+	 * Integer digits of the plain decimal form of an (unstripped) {@code precision}/{@code
+	 * scale} pair, in {@code long} arithmetic (B2): a scale {@code < 0} pads the unscaled
+	 * digits with zeros ({@code 1e999} &rarr; 1000 integer digits); a value {@code < 1}
+	 * contributes none.
+	 */
+	private static long integerDigits(long precision, long scale) {
+		return scale < 0 ? precision - scale : Math.max(precision - scale, 0);
 	}
 }

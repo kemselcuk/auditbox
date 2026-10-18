@@ -595,6 +595,102 @@ class EventApiControllerTest {
 		assertThat(jsonbText(eventId, "metadata->>'amount'")).isEqualTo(number);
 	}
 
+	// ---------------------------------------------------------------------
+	// Review round 2 re-review blockers B1/B2: the stored (unstripped) form
+	// is bounded too, and exponent parsing cannot overflow digit arithmetic
+	// ---------------------------------------------------------------------
+
+	/**
+	 * B1 boundary. For the literal {@code "1." + "0".repeat(n) + "e-999"} the parsed
+	 * instance has precision {@code n + 1} and scale {@code n + 999}, so its stored plain
+	 * form has {@code max(precision - scale, 0) + max(scale, 0) = n + 999} digits while the
+	 * canonical form stays 1e-999 (999 fractional digits). {@code n = 3001} puts exactly
+	 * 4000 stored digits at the bound: accepted, stored, and idempotently replayed with the
+	 * literal's scale intact (jsonb numeric keeps all 4000 fractional digits).
+	 */
+	@Test
+	void metadataNumberAtTheStoredDigitBoundIsAcceptedAndReplays() throws Exception {
+		String eventId = uniqueEventId();
+		// The stored plain form of the parsed instance: "0." + 998 zeros + 1 + 3001 zeros
+		// (4000 fractional digits — the literal's scale, kept by the parser and by jsonb).
+		String storedForm = "0." + "0".repeat(998) + "1" + "0".repeat(3001);
+		String body = eventJson(eventId, "user-stored-bound", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"amount\":1." + "0".repeat(3001) + "e-999}");
+		String expectedPlainForm = "\"amount\":" + storedForm;
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		assertThat(first.body()).contains(expectedPlainForm).doesNotContain("E-");
+		// The jsonb read-back preserves the stored scale (4000 fractional digits), so the
+		// replayed body renders identically and the echo parses under the 4096 limit.
+		assertThat(retry.body()).isEqualTo(first.body());
+		assertThat(jsonbText(eventId, "metadata->>'amount'")).isEqualTo(storedForm);
+	}
+
+	/**
+	 * B1: the literal from the re-review report — one zero more than the accepted boundary
+	 * above ({@code n = 3098}, 4097 stored digits, a 4099-character plain form above the
+	 * 4096-character read limit) passed the canonical bounds (999 fractional digits) and
+	 * failed the jsonb insert itself with a 500. The stored-form bound rejects it at
+	 * validation with a metadata field error, no row stored.
+	 */
+	@Test
+	void metadataNumberBeyondTheStoredDigitBoundReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-stored-bound", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1." + "0".repeat(3098) + "e-999}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(fieldNames(JSON.readTree(response.body()))).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * B2: the exponent 2147483647 overflows 32-bit digit arithmetic (precision 1, scale
+	 * -2147483647; in int arithmetic precision - scale wraps negative and passed every
+	 * bound, and the hash then tried to materialize 2147483648 digits in toPlainString()).
+	 * Long arithmetic rejects at validation: 400 with a metadata field error, no row, no
+	 * 500, in constant time (the timing bound is deliberately loose, as above).
+	 */
+	@Test
+	void metadataNumberWithIntOverflowingExponentReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		long started = System.nanoTime();
+		HttpResponse<String> response = post(eventJson(eventId, "user-exponent-overflow", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1e2147483647}"));
+		long durationMs = (System.nanoTime() - started) / 1_000_000;
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(fieldNames(JSON.readTree(response.body()))).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+		assertThat(durationMs).isLessThan(2000);
+	}
+
+	/**
+	 * B2 companion: an exponent one beyond Integer.MAX_VALUE cannot even parse (the parser
+	 * rejects the literal, D12) — the same 400 contract, without a metadata field error
+	 * because the body never reaches Bean Validation, and no 500.
+	 */
+	@Test
+	void metadataNumberWithUnparsableExponentReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-exponent-parse", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1e2147483648}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		assertThat(JSON.readTree(response.body()).get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
 	private static String digits(int count) {
 		return "9".repeat(count);
 	}
