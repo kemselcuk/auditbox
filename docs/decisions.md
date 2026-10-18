@@ -171,7 +171,9 @@ decision → rationale/alternatives.
   handler mapping, outside the controller-scoped advice.
 - Validation: `eventId`/`userId`/`eventType`/`source` not blank, max 128; `occurredAt` ISO-8601
   offset date-time as accepted by `OffsetDateTime.parse` (an offset is required; fractional
-  seconds optional); `metadata` any JSON value, bounded per number to 1000 integer and 1000
+  seconds optional) and within `0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z` — the same
+  range the read side enforces (D13), so a stored event is always a cursor position the read
+  path accepts; `metadata` any JSON value, bounded per number to 1000 integer and 1000
   fractional digits in canonical decimal form and 4000 total digits in the stored (unstripped)
   form (`@ValidMetadata`); absent ≡ null.
 - Rendering: BigDecimal numbers are written as plain decimals (no exponent notation) on both the
@@ -192,16 +194,21 @@ decision → rationale/alternatives.
 - Decision: `GET /api/v1/events` with optional exact-match filters `userId`, `eventType`,
   `source`; optional inclusive bounds `occurredFrom`/`occurredTo` (ISO-8601 with offset); an
   optional opaque `cursor`; `size` default 20, 1..100. Blank filters count as absent; repeated
-  query parameters are comma-joined by the servlet layer (documented, not rejected). Order
+  filter parameters are comma-joined by the servlet layer (documented, not rejected), while
+  repeated `size`/`cursor` values fail their own validation with 400. Every occurrence
+  date-time — write-side `occurredAt`, read-side bounds and cursor positions — must be inside
+  `0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z`; the write side enforces the same range,
+  so cursor encoding and decoding are symmetric (review round 3b, F-1). Order
   `occurred_at DESC, event_id DESC` (D3). Response envelope
   `{"items":[EventResponse...],"nextCursor":...}`; `nextCursor` is non-null only when a
   (size + 1)-th row exists; no total count.
 - Cursor: URL-safe Base64 without padding over a strict JSON document
-  `{"occurredAt":"<ISO-8601 UTC instant, variable precision up to microseconds>","eventId":"<id>"}`;
-  decode requires exactly these two textual fields (duplicate keys rejected), a parseable
+  `{"occurredAt":"<ISO-8601 UTC instant>","eventId":"<id>"}`; the instant uses
+  `OffsetDateTime#toString` precision (seconds omitted when zero; fraction 0, 3 or 6 digits).
+  Decode requires exactly these two textual fields (duplicate keys rejected), a parseable
   date-time inside the supported range, and a non-blank, NUL-free 1..128-character eventId;
   anything else is 400. The encoded token is capped at 1200 characters (the worst write-legal
-  cursor is ~1104), so the API never emits a cursor it would reject. The cursor is opaque and
+  cursor is 1104), so the API never emits a cursor it would reject. The cursor is opaque and
   unsigned (clients may craft positions; it is not an authorization token), but crafting cannot
   produce a 500 or an unbounded scan.
 - Query: Spring Data JPA 4.1 fluent Specification API
@@ -218,7 +225,9 @@ decision → rationale/alternatives.
   consistently in ORDER BY and in the predicate.
 - Rationale: keyset pagination yields stable pages under concurrent writes without counting;
   the JSON+Base64 cursor keeps eventIds with special characters safe and the decode strict.
-- Evidence: 34 list API tests + 18 cursor unit tests (160 total); a live walk with a
-  control-character 128-char eventId produced a 556-character cursor that replayed successfully
-  (the pre-fix 512 cap rejected it); a live 3-page walk traversed a 3-row equal-timestamp tie
-  group without duplicates.
+- Evidence: 34 list API tests, 19 cursor unit tests and 42 write-API tests (164 total); a live
+  walk with a control-character eventId produced a 556-character cursor that replayed
+  successfully (the pre-fix 512 cap rejected it); the exact worst write-legal cursor is 1104
+  characters; a live 3-page walk traversed a 3-row equal-timestamp tie group without duplicates;
+  write-side range enforcement rejects `+10000-...` with an occurredAt field error while the
+  min/max boundaries store and replay.
