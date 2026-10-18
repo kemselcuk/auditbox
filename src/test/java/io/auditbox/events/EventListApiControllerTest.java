@@ -55,8 +55,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>{@code generate_statistics} is enabled so the one-SELECT-per-page guarantee of T4.1
  * (no COUNT query, decision D3) is asserted with Hibernate statement counters.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-		properties = "spring.jpa.properties.hibernate.generate_statistics=true")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+		"spring.jpa.properties.hibernate.generate_statistics=true",
+		// T7.1 gap close: statistics counters alone cannot detect a dropped SQL LIMIT, so
+		// the statement text is recorded too and asserted in aPageSelectCarriesTheSqlLimitClause.
+		"spring.jpa.properties.hibernate.session_factory.statement_inspector="
+				+ "io.auditbox.events.RecordingStatementInspector" })
 @Testcontainers
 @ActiveProfiles("test")
 class EventListApiControllerTest {
@@ -505,6 +509,26 @@ class EventListApiControllerTest {
 		assertThat(result.nextCursor()).isNull();
 	}
 
+	/**
+	 * T7.1 gap close for the T4.1 criterion "default 20 / max 100": the default page size
+	 * of 20 (D3) with more than 20 matching rows — exactly 20 items and a continuation
+	 * cursor for the rest. Blank {@code size} falls back to the same default (asserted as
+	 * part of blankFilterValuesAreTreatedAsAbsent).
+	 */
+	@Test
+	void requestsWithoutASizeParameterUseTheDefaultPageSizeOf20() throws Exception {
+		String user = unique("t4-default-size-user");
+		for (int i = 0; i < 22; i++) {
+			seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+					BASE.minus(i, ChronoUnit.MINUTES)));
+		}
+
+		Page result = page(get("/api/v1/events?userId=" + user));
+
+		assertThat(result.items()).hasSize(20);
+		assertThat(result.nextCursor()).isNotBlank();
+	}
+
 	@Test
 	void aPageLengthExactlyEqualToSizeEndsTheWalk() throws Exception {
 		String user = unique("t4-fullpage-user");
@@ -566,8 +590,13 @@ class EventListApiControllerTest {
 	@Test
 	void blankFilterValuesAreTreatedAsAbsent() throws Exception {
 		String user = unique("t4-blank-user");
+		// Seeded into the future beyond every other seed of this class (the latest of which
+		// is BASE + 60min): with no filters the page is the newest 20 of the whole shared
+		// table, so the seed must be guaranteed a slot on that first page (T7.1 robustness
+		// fix — the original BASE-30min seed fell out of the page as other tests' seeds
+		// accumulated).
 		Seeded onlyUserEvent = seed(new Seeded(uniqueEventId(), user, "payment.settled",
-				"core-banking", BASE.minus(30, ChronoUnit.MINUTES)));
+				"core-banking", BASE.plus(120, ChronoUnit.MINUTES)));
 		String otherUser = unique("t4-blank-user");
 		seed(new Seeded(uniqueEventId(), otherUser, "payment.settled", "core-banking",
 				BASE.minus(20, ChronoUnit.MINUTES)));
@@ -610,6 +639,38 @@ class EventListApiControllerTest {
 		page(get("/api/v1/events?userId=" + user + "&size=5&cursor=" + firstPage.nextCursor()));
 
 		assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
+	}
+
+	/**
+	 * T7.1 gap close: the statistics counter above proves one statement but not its shape —
+	 * a dropped SQL LIMIT would still be exactly one prepared statement. The recorded
+	 * statement text pins that a page fetch is really capped at {@code size + 1} rows.
+	 */
+	@Test
+	void aPageSelectCarriesTheSqlLimitClause() throws Exception {
+		String user = unique("t4-limit-user");
+		for (int i = 0; i < 12; i++) {
+			seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+					BASE.minus(i, ChronoUnit.MINUTES)));
+		}
+
+		RecordingStatementInspector.clear();
+		Page firstPage = page(get("/api/v1/events?userId=" + user + "&size=5"));
+
+		// One statement total — the page SELECT itself (same shape as the statistics test).
+		List<String> statements = RecordingStatementInspector.recorded();
+		assertThat(statements).hasSize(1);
+		assertThat(firstPage.items()).hasSize(5);
+		assertThat(firstPage.nextCursor()).isNotBlank();
+		// The row cap must be part of the SQL: a page fetch takes at most size + 1 = 6 rows,
+		// never the whole filtered table (D3) — the statistics counter above cannot detect
+		// a dropped LIMIT, the statement text can. Hibernate binds the cap as a JDBC
+		// parameter, so the text carries the clause with the placeholder, not the digit:
+		// PostgreSQL/Hibernate 7 renders `fetch first ? rows only` (observed; the
+		// alternative spelling would be `limit ?`). The bound VALUE (6) is proven by the
+		// walk tests and by nextCursor ending the walk at the right page boundaries.
+		assertThat(statements.getFirst().toLowerCase())
+				.containsAnyOf("fetch first ? rows only", "limit ?");
 	}
 
 	// ---------------------------------------------------------------------

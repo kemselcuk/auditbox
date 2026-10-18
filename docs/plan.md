@@ -85,7 +85,132 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 ## Acceptance evidence matrix
 
-Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
+Filled in T7.1 (2026-10-18): each acceptance criterion of stages 0–6 plus the project-level
+criteria mapped to the exact artefact that proves it. Evidence kinds:
+
+- **test** — automated in the JUnit 5 suite (`./mvnw verify`, Testcontainers against the pinned
+  `postgres:18-alpine` image); exact test class and method named.
+- **live** — a real run against the running local stack, recorded as a transcript/screenshot in
+  the README or the review log; not repeatable by `./mvnw verify`.
+- **doc** — documentary artefact asserted by review, not execution.
+
+### Stage 0 — Documentation and decision record
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T0.1 `AGENTS.md` English, commands accurate, committed | `AGENTS.md` itself (commands cross-checked against this README); repo is git-tracked at `main` | doc |
+| T0.2 plan/decisions English, scope matches approved plan, committed | `docs/plan.md`, `docs/decisions.md` (D1–D15); scope boundaries re-checked in the T7.1 audit (no Kafka/scope creep; no tamper-proof wording anywhere) | doc |
+
+### Stage 1 — Skeleton and local run
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T1.1 Maven project, Boot 4.1.x, Java 21, required dependencies | `pom.xml` — `spring-boot-starter-parent` 4.1.1, `java.version` 21, all listed starters; dependency list resolves `hibernate-core 7.4.5.Final`, `spring-data-jpa 4.1.1`, Flyway/Testcontainers/springdoc per D9 | doc |
+| T1.1 `local`/`test` profiles exist | `application-local.yml`, `application-test.yml` (+ `application-dev.yml`, base `application.yml`) | doc |
+| T1.1 integration test boots the app against Testcontainers PostgreSQL and asserts `/actuator/health` UP | `AuditBoxApplicationTests.actuatorHealthIsUpAgainstRealPostgres` | test |
+| T1.1 `./mvnw verify` green with real output | latest full run in the T7.1 task report (209 tests after the two T7.1 gap-close tests); earlier: 207 at stage-6 sign-off | test |
+| T1.1 versions recorded in `decisions.md` | `docs/decisions.md` D9 | doc |
+| T1.2 `docker-compose.yml` valid (pinned image, healthcheck, volume) | `docker-compose.yml` (image `postgres:18-alpine`, healthcheck, named volume); `docker compose config` validated by the orchestrator in the stage-1 report | doc + live |
+| T1.2 README steps reproduce a working local run | README "Getting started" re-walked live by the orchestrator at stage 1; re-verified literally at T7.2 acceptance | live |
+
+### Stage 2 — Schema and content hash
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T2.1 V1 migration applies on a clean database | `EventsSchemaMigrationTest.flywayAppliesV1ToACleanDatabase` (Flyway history at version 1) | test |
+| T2.1 schema asserted (columns/types/nullability/defaults/unique constraint) | `EventsSchemaMigrationTest.eventsTableHasTheExpectedColumnsAndTypes`, `eventIdHasTheUniqueConstraint` | test |
+| T2.1 unique constraint actually rejects duplicates (the race signal of D4) | `EventsSchemaMigrationTest.eventIdUniqueConstraintRejectsDuplicateEventIds` (SQLState 23505) | test |
+| T2.1 keyset + filter indexes exist, keyset order is `(occurred_at DESC, event_id DESC)` | `EventsSchemaMigrationTest.keysetAndFilterIndexesExist` | test |
+| T2.2 hash: key order/timezone normalization stable, canonical form pinned | `EventContentHasherTest.metadataKeyOrderDoesNotChangeHash`, `canonicalFormHasSortedKeysAtEveryLevel`, `sameInstantWithDifferentOffsetsHashesIdentically` | test |
+| T2.2 hash: microsecond truncation of `occurredAt` | `EventContentHasherTest.occurredAtFractionsHashAtMicrosecondPrecision`, `subMicrosecondFractionsTruncateDownToMicroseconds` (and end to end: `EventApiControllerTest.retryEchoingTheReturnedOccurredAtDoesNotFalseConflict`) | test |
+| T2.2 hash: different content → different hash | `EventContentHasherTest.changingEachContentFieldOnceChangesTheHash` (+ every number/metadata equivalence test asserting both directions) | test |
+| T2.2 hash: documented rules (absent ≡ null, number equality, arrays, SHA-256/UTF-8, thread safety) | `EventContentHasherTest.absentAndNullMetadataFollowTheDocumentedRule`, `equivalentNumberFormsHashIdentically`, `hashIsLowercaseHexSha256OverTheCanonicalJson` (independent SHA-256 recomputation), `hashUsesUtf8BytesForNonAsciiContent`, `concurrentHashingMatchesSingleThreadedHash` + the rest of the class | test |
+| T2.2 hash rule documented | `docs/decisions.md` D10 | doc |
+
+### Stage 3 — POST /api/v1/events
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T3.1 DTO + Bean Validation → 400 Problem Details with field errors | `EventApiControllerTest.invalidRequestsReturn400ProblemDetailsWithFieldErrors` (9 parameterized cases naming the offending field); oversized/HIL-shaped metadata numbers: `oversizedNumberInMetadataReturns400Not500` + the boundary tests below | test |
+| T3.1 201/200/409 status semantics | `EventApiControllerTest.newEventIsStoredAndReturnedWith201`, `identicalRetryReturns200WithTheStoredRecordAndKeepsSingleRow`, `sameEventIdWithDifferentContentReturns409WithExistingEvent` (6 content variants, `existingEvent` extension asserted against the stored row) | test |
+| T3.1 OpenAPI schema for the events path | `EventApiControllerTest.openApiDocsDescribeTheEventsPath` (summary, 200/201/400/409, `CreateEventRequest` required/bounds) | test |
+| T3.2 insert → catch unique violation → re-read → compare hash → 200 or 409 | the 200/409 tests above (with hash comparison in the 409 path) plus the equivalent-form replay (`occurredAt` offset, key order, `1.00`) in `identicalRetryReturns200WithTheStoredRecordAndKeepsSingleRow` | test |
+| T3.2 N concurrent identical requests → exactly one row, {1×201, rest 200}, no 5xx | `EventApiControllerTest.concurrentIdenticalRequestsProduceExactlyOne201AndExactlyOneRow` (20 requests, race via CyclicBarrier on real HTTP); reproduced end to end by `scripts/dedupe-demo.sh` (README transcript) | test + live |
+| T3.2 concurrent different content → 1×201 + 1×409 | `EventApiControllerTest.concurrentDifferentContentRequestsProduceOne201AndOne409AndOneRow` | test |
+| T3.2 (hardening) exact jsonb precision end to end; plain-decimal rendering; SQL data errors → 400 | `EventApiControllerTest.highPrecisionMetadataSurvivesEndToEndAsExactJsonb`, `nestedMetadataRoundTripsAndIsStoredAsRealJsonb`, `decimalMetadataNumbersRenderAsPlainDecimalsInEveryResponse`, `nullCharacterInUserIdSurfacesAs400AndStoresNoRow`, `nullCharacterInsideMetadataStringSurfacesAs400AndStoresNoRow`, plus the number-bound tests (`metadataNumberAtThe*Bound*`, `metadataNumberWith*Returns400AndStoresNoRow` — round 2/2b/2c closures) | test |
+
+### Stage 4 — GET /api/v1/events
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T4.1 filters (alone and combined), inclusive bounds, blank ≡ absent | `EventListApiControllerTest.filterByUserIdReturnsOnlyThatUsersEventsNewestFirst`, `filterByEventTypeReturnsOnlyMatchingEvents`, `filterBySourceReturnsOnlyMatchingEvents`, `occurredAtRangeBoundariesAreInclusiveAndAcceptOffsets`, `combinedFiltersApplyConjunctively`, `noMatchingFilterReturnsAnEmptyPage`, `blankFilterValuesAreTreatedAsAbsent` | test |
+| T4.1 order `occurred_at DESC, event_id DESC` | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates` (full 45-row walk sorted assertion) | test |
+| T4.1 opaque base64url cursor, JSON payload, special/control characters, range boundaries | `EventCursorTest.encodingIsBase64UrlWithoutPaddingOverAJsonDocument`, `roundTripsTheKeysetPosition`, `roundTripsEventIdsWithSpecialCharacters`, `roundTripsAMaximumLengthControlCharacterEventId`, `subMicrosecondPrecisionIsTruncatedOnEncode`, `roundTripsTheSupportedRangeBoundaries` | test |
+| T4.1 default 20 / max 100 | `EventListApiControllerTest.maximumPageSizeOf100IsAccepted`, `requestsWithoutASizeParameterUseTheDefaultPageSizeOf20` (added in T7.1) | test |
+| T4.1 `nextCursor` only when more results exist | walk test (4 cursors then null), `aPageLengthExactlyEqualToSizeEndsTheWalk`, `aTieGroupEndingOnTheLastPageHasNullNextCursor`, `aCursorAtANonExistentPositionContinuesCorrectly` | test |
+| T4.1 pagination walk: full dataset, no duplicates/gaps, tie groups | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates` (45 rows, page boundary through a 3-row tie) | test |
+| T4.1 walk stable while a new event is inserted | `EventListApiControllerTest.cursorWalkIgnoresAnEventInsertedBetweenPages` | test |
+| T4.1 one SELECT per page, no COUNT | `EventListApiControllerTest.aPageRequestIssuesExactlyOneSelectWithoutCount` (Hibernate statistics) | test |
+| T4.1 the page SELECT really carries the SQL row cap | `EventListApiControllerTest.aPageSelectCarriesTheSqlLimitClause` (recorded statement text, added in T7.1 — statistics cannot detect a dropped LIMIT) | test |
+| T4.2 malformed cursor → 400 (incl. all strict decoder rejections) | `EventListApiControllerTest.invalidQueryParametersReturn400ProblemDetails` (15 parameterized query cases) + `EventCursorTest.emptyCursorIsRejected` … `oversizedCursorIsRejected` (13 decode-rejection tests) | test |
+| T4.2 invalid date range → 400, out-of-range bounds named | `invalidQueryParametersReturn400ProblemDetails` (occurredFrom/occurredTo cases), `occurredBoundsOutsideTheSupportedRangeAre400NamingTheParameter`, `cursorOccurredAtOutsideTheSupportedRangeIs400NamingTheParameter`; write-side twin: `EventApiControllerTest.occurredAtAtTheSupportedRangeBoundsIsAcceptedAndReplays`, `invalidRequestsReturn400ProblemDetailsWithFieldErrors` (range cases) | test |
+| T4.2 OpenAPI parameter docs | `EventListApiControllerTest.openApiDocsDescribeTheListEndpoint` (all 7 parameters, 200/400, `EventPage`) | test |
+
+### Stage 5 — X-API-Key security
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T5.1 missing/wrong key → 401 Problem Details, `WWW-Authenticate`, no key echo, nothing stored | `ApiKeySecurityTest.missingApiKeyIsRejectedWithProblemDetails401`, `wrongApiKeyIsRejectedWith401WithoutEchoingTheSubmittedKey` (wrong-key POST writes nothing) | test |
+| T5.1 correct key → 201 write / 200 read (case-insensitive header) | `ApiKeySecurityTest.correctApiKeyAllowsWriteAndRead`, `lowerCaseHeaderNameAuthenticatesTheSameWay` | test |
+| T5.1 constant-time comparison, null/blank/whitespace rules | `ApiKeyMatcherTest` (all 6 methods: equal/different, null/blank both sides, configured-side strip) | test |
+| T5.1 `prod` fails fast without a key | `ApiKeyProdRequirementTest.prodStartupFailsWithoutApiKey`, `prodStartupFailsWithBlankApiKey`, `prodStartupFailsWithWhitespaceOnlyApiKey`, `prodStartupSucceedsWithConfiguredApiKey` | test |
+| T5.1 health public; every other path requires the key | `ApiKeySecurityTest.actuatorHealthIsPublicWithoutApiKey`, `otherActuatorPathRequiresApiKey`, `apiDocsWithoutApiKeyIsRejectedWhileEnabledInTest`, `unknownPathWithoutKeyIsStillRejected` | test |
+| T5.1 authenticated non-auth errors stay 404/405 (not 401); `/logout` answers 401 | `ApiKeySecurityTest.authenticatedRequestToUnknownPathReturns404NotAuthError`, `authenticatedUnsupportedMethodReturns405NotAuthError`, `logoutWithoutApiKeyReturns401Not302` | test |
+| T5.1 Swagger/OpenAPI dev-profile-only; OpenAPI security scheme present | `ApiKeySecurityTest.openApiDocumentDeclaresApiKeySecurityScheme`; dev-profile enablement is configuration (`application-dev.yml`, base disables springdoc) — configuration review + stage-5 live probes | test + doc + live |
+| T5.1 README "Authentication" | README §Authentication (this README) | doc |
+| T5.1 (hardening) raw invalid percent-escape → 400 | `EventListApiControllerTest.rawInvalidPercentEscapeInQueryStringReturns400ProblemDetails` (round 4, F1) | test |
+
+### Stage 6 — Demo package
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| T6.1 client produces seeded events, usage documented | `SampleEventClientTest` (config/validation/exit codes/eventId scheme/payload determinism — non-network parts, 17 tests) + the two real run transcripts in README "Demo → Sample-event client" (fresh 6×201, same-batch replay 6×200) | test + live |
+| T6.2 single-page demo verified in a browser; screenshot committed | screenshot `docs/images/demo.png` (real headless-Chrome run, README "Demo → Browser demo"); automated coverage of the server side: `DemoStaticPageTest.demoPageIsServedWithoutApiKeyAndContainsTheExpectedElements`, `demoPageCarriesNoSecrets`, `eventsApiStaysKeyProtectedWhileTheDemoPageIsPublic` | live + test |
+| T6.3 deterministic dedupe script, one command, stable output, transcript in README | `scripts/dedupe-demo.sh` + the real 4-scenario transcript in README "Demo → Dedupe script"; run windows/parallel-rerun safety verified live in review round 5b (4 back-to-back runs, exit 0 each) | live |
+
+### Project-level acceptance criteria
+
+| Criterion | Evidence | Kind |
+|---|---|---|
+| Idempotent ingestion per `eventId` | T3.2 tests (200/409 semantics); `scripts/dedupe-demo.sh` end-to-end transcript (README) | test + live |
+| Concurrent duplicates leave exactly one row | `EventApiControllerTest.concurrentIdenticalRequestsProduceExactlyOne201AndExactlyOneRow`; dedupe script scenario 1 (`1x201 + 9x200 … rows: 1`) | test + live |
+| Stable keyset pagination | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates`, `cursorWalkIgnoresAnEventInsertedBetweenPages`, one-SELECT/no-COUNT + LIMIT tests | test |
+| Simple service auth (D5) | `ApiKeySecurityTest` (12), `ApiKeyMatcherTest` (6), `ApiKeyProdRequirementTest` (4) | test |
+| OpenAPI per contract | `openApiDocsDescribeTheEventsPath`, `openApiDocsDescribeTheListEndpoint`, `openApiDocumentDeclaresApiKeySecurityScheme` | test |
+| Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 209 tests (T7.1 report); runs require only Docker (Testcontainers), not a pre-started database | test |
+| Demo | three demo paths + README transcripts/screenshot (stage 6 rows above) | test + live |
+| README evidence (T7.2) | this README (Getting started, API with captured responses, Authentication, Demo transcripts/screenshot, Testing & evidence pointing here); orchestrator follows it literally on a clean checkout | doc + live |
+
+### Known evidence gaps (recorded, not silently omitted)
+
+- **Getting-started/compose path is manual evidence.** `docker compose config`, the compose
+  healthcheck and the literal README walk-through are live probes (stage-1 report, T7.2
+  acceptance), not JUnit tests — automating them would mean Docker-in-test orchestration of the
+  compose stack, which the approved scope does not include. The automated suite instead proves
+  the same stack behaviour directly via Testcontainers (same pinned image).
+- **Browser-demo interactivity has no automated UI drive.** Filters, the cursor "Load more"
+  walk, the send-event form and the round-5 adversarial XSS probe were verified live (manually,
+  review rounds 5/5b); `DemoStaticPageTest` only pins serving, element presence, no-secret
+  embedding and API protection. Closing this needs a browser-driver framework — deferred as out
+  of scope.
+- **Dedupe-script evidence is a transcript, not a test.** `scripts/dedupe-demo.sh` is shell
+  logic (docker/psql/HTTP races), reproducible by one command, but not part of
+  `./mvnw verify`; its failure handling is documented, and its run id is per-process so reruns
+  stay valid (round 5, F1).
+- **One-off live probes from review rounds** (e.g. the 2d totality checks over number literals,
+  the replicated 401/401/201 pattern probes) remain recorded in the review log and decisions
+  D10/D13/D14 rather than converted to tests; their load-bearing behavior is covered by the
+  automated tests named above.
 
 ## Review log
 
@@ -122,15 +247,6 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
   pending L1/L2 doc precision, L3 legacy-row hygiene and the I1 attribution; no behavioral
   findings, 164 tests green. Conditions met in `66f8337`; local out-of-range legacy rows deleted.
   **Stage 4 signed off.**
-- **Round 5** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 6): verdict **"not sound"**,
-  solely because of F1 (the dedupe script's second-resolution run id collided on back-to-back
-  runs, producing a misleading failure); client determinism, the demo page (incl. an adversarial
-  XSS probe), security scoping, tests and evidence were all sound. F2-F12 were minor/nits.
-  Fixes `41b7712`, `ad7fc09`.
-- **Round 5b** (2026-10-18, sign-off): verdict **"sound"** — all F1-F12 verified closed with live
-  evidence (4 back-to-back + 2 overlapping script runs, client exit codes 2/1/1, page
-  filter-snapshot behaviour), 207 tests green; two cosmetic script notes folded into this
-  sign-off commit. **Stage 6 signed off.**
 - **Round 4** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 5): verdict **"sound with minor
   issues"**, nothing blocking. F1 raw invalid percent-escapes returned 500 (pre-existing Stage 4
   gap), F2 `/logout` answered 302 without a key, F3 whitespace in `API_KEY` caused a silent
@@ -140,3 +256,12 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
   findings and nits verified closed, 187 tests green, live probes reproduce the behaviour; only
   documentation nits remained (D14 count, review log, two javadocs), fixed in `74b1d56`.
   **Stage 5 signed off.**
+- **Round 5** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 6): verdict **"not sound"**,
+  solely because of F1 (the dedupe script's second-resolution run id collided on back-to-back
+  runs, producing a misleading failure); client determinism, the demo page (incl. an adversarial
+  XSS probe), security scoping, tests and evidence were all sound. F2-F12 were minor/nits.
+  Fixes `41b7712`, `ad7fc09`.
+- **Round 5b** (2026-10-18, sign-off): verdict **"sound"** — all F1-F12 verified closed with live
+  evidence (4 back-to-back + 2 overlapping script runs, client exit codes 2/1/1, page
+  filter-snapshot behaviour), 207 tests green; two cosmetic script notes folded into this
+  sign-off commit. **Stage 6 signed off.**

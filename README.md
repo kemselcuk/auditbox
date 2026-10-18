@@ -2,30 +2,99 @@
 
 # AuditBox
 
-Created in [T3 Code](https://t3.codes).
+A small Spring Boot service that accepts transaction/event history over HTTP, stores it in
+PostgreSQL, and serves it back with filters and stable keyset pagination — written as a
+provable reference implementation: every documented behavior is backed by a test or a real
+transcript.
+
+Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/plan.md).
 
 ## Overview
 
-AuditBox is a small event-history service: it will accept transaction/event history over HTTP,
-store it in PostgreSQL, and serve it back with filters and stable keyset pagination. Target
-behavior: ingestion is idempotent per `eventId` (Stage 3), listing uses keyset pagination
-(Stage 4), and access is authenticated with a static `X-API-Key` (Stage 5). Today the skeleton,
-schema, canonical hash, write API, filtered keyset-paginated listing, and the real
-X-API-Key authentication are all in place.
-AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
-updated or deleted like any other database row.
+- **Ingestion** (`POST /api/v1/events`) is idempotent per client-generated `eventId`: an
+  identical retry returns `200` with the stored record, different content on the same
+  `eventId` is rejected with `409` — including under concurrency (20 identical parallel
+  requests produce exactly one row).
+- **Listing** (`GET /api/v1/events`) filters by `userId`, `eventType`, `source` and
+  `occurredAt` range, orders newest first, and pages with an opaque keyset cursor. Each page
+  request is a single `SELECT` capped at `size + 1` rows; there is no total count, and pages
+  are stable under concurrent inserts.
+- **Authentication** is a static `X-API-Key` header checked with a constant-time comparison;
+  `prod` refuses to start without a configured key.
+- **OpenAPI** descriptions exist for both endpoints (`/v3/api-docs`), served only in the
+  `dev`/`test` profiles.
 
-Status: Stage 6 (demo package) — roadmap in [docs/plan.md](docs/plan.md).
+The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
+is [docs/decisions.md](docs/decisions.md) (D1–D15).
 
-## Prerequisites
+## What this is / is not
 
-- Java 21 LTS (build target `maven.compiler.release=21`; verified with Temurin 21.0.8)
-- Docker with the Compose plugin (`docker compose`)
-- No secrets needed: every variable has a safe local default (see [.env.example](.env.example))
+AuditBox **records what it receives**; nothing more is claimed about history:
+
+- It is **not** a tamper-proof or immutable ledger — stored rows are ordinary PostgreSQL rows
+  and can be updated or deleted like any other database row; the content hash documents
+  content identity, and protects nothing.
+- It is the only service in this repository (no event platform, no sidecar), and the
+  PostgreSQL database is the only data store, with a single `events` table.
+- There is no total-count API, no offset pagination, and no framework-managed OTAP/data
+  platform: those are recorded as rejected alternatives ([docs/decisions.md](docs/decisions.md)).
+
+## Architecture
+
+One Spring Boot application, one PostgreSQL database, one `events` table:
+
+```
+            ┌────────────────────────────────────────────────────────────────┐
+ client ───▶│ HTTP  :8080                                                    │
+  (curl,    │                                                                │
+  demo app, │   X-API-Key filter ──▶ EventController                         │
+  browser)  │   (constant-time             │  /api/v1/events                  │
+  page)     │    SHA-256/                  │                                  │
+            │    MessageDigest)            ├─▶ POST: validation → canonical   │
+            │                              │   content hash (SHA-256)         │
+            │                              │   → REQUIRES_NEW insert          │
+            │                              │     → unique-violation race      │
+            │                              │       → 201 / 200 / 409          │
+            │                              │                                  │
+            │                              └─▶ GET: parse/validate query      │
+            │                                  → keyset Specification query   │
+            │                                    (one SELECT, size + 1 cap,   │
+            │                                     opaque base64url cursor)    │
+            │                                                                │
+            │   Flyway ──▶ single migration V1: events table                 │
+            │   springdoc (dev/test profiles only) ──▶ /v3/api-docs, /swagger-ui │
+            └───────────────┬────────────────────────────────────────────────┘
+                            │ JDBC
+                            ▼
+                PostgreSQL (container, host port 5432 or DB_PORT)
+                single table `events`:
+                  id (identity PK), event_id (unique, uq_events_event_id),
+                  user_id, event_type, source, occurred_at TIMESTAMPTZ,
+                  received_at TIMESTAMPTZ (server, default now()),
+                  metadata JSONB NULL, content_hash TEXT,
+                  created_at TIMESTAMPTZ (default now())
+                  indexes: (occurred_at DESC, event_id DESC),
+                           user_id, event_type, source
+```
+
+Components (source layout under [src/main/java/io/auditbox](src/main/java/io/auditbox)):
+
+| Package | Role |
+|---|---|
+| `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter`, constant-time `ApiKeyMatcher`, `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details |
+| `events` | `EventController` (POST/GET), `EventService`/`EventInsertService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
+| `demo` | sample-event client (JDK only) |
+
+The browser demo page is a static resource ([src/main/resources/static/demo](src/main/resources/static/demo/index.html))
+served by the app itself.
 
 ## Getting started
 
-### 1. Start PostgreSQL
+Prerequisites: Java 21 LTS (build target `maven.compiler.release=21`; verified with
+Temurin 21.0.8), Docker with the Compose plugin (`docker compose`). No secrets are needed —
+every variable has a safe local default (see [.env.example](.env.example)).
+
+### 1. Start the database
 
 ```bash
 docker compose up -d db
@@ -38,9 +107,9 @@ NAME          IMAGE                COMMAND                  SERVICE   CREATED   
 auditbox-db   postgres:18-alpine   "docker-entrypoint.s…"   db        8 seconds ago  Up 8 seconds (healthy)   0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
 ```
 
-> The default host port is 5432 (`DB_PORT` in [.env.example](.env.example)). On the machine this
-> output was produced on, 5432 is already used by a host PostgreSQL, so the run used `DB_PORT=5433`.
-> If 5432 is free on yours, omit the variable and the port everywhere below.
+> The default host port is 5432 (`DB_PORT` in [.env.example](.env.example)). On the machine
+> this output was produced on, 5432 was already used by a host PostgreSQL, so the run used
+> `DB_PORT=5433`. If 5432 is free on yours, omit the variable and the port everywhere below.
 
 ### 2. Run the application (local profile)
 
@@ -48,8 +117,8 @@ auditbox-db   postgres:18-alpine   "docker-entrypoint.s…"   db        8 second
 DB_PORT=5433 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-Expected startup on a second run (abridged real output; the first run on an empty volume also logs
-`<< Empty Schema >>` and `Migrating schema "public" to version "1 - create events"`):
+Expected startup on a second run (abridged real output; the first run on an empty volume also
+logs `<< Empty Schema >>` and `Migrating schema "public" to version "1 - create events"`):
 
 ```text
 ... org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:5433/auditbox (PostgreSQL 18.6)
@@ -62,7 +131,7 @@ Expected startup on a second run (abridged real output; the first run on an empt
 Flyway applies `V1__create_events.sql` on first start; later starts validate the migration and
 report that the schema is up to date.
 
-### 3. Check it is alive
+### 3. First request
 
 ```bash
 curl http://localhost:8080/actuator/health
@@ -72,8 +141,9 @@ curl http://localhost:8080/actuator/health
 {"groups":["liveness","readiness"],"status":"UP"}
 ```
 
-`/actuator/health` is public (compose-style health checks); every other path requires the static
-`X-API-Key` header (see [Authentication](#authentication)).
+`/actuator/health` is public (compose-style health checks); every other path requires the
+static `X-API-Key` header (see [Authentication](#authentication)). With the `local` profile
+the key has the safe default `local-dev-key` — see [API](#api) below for the first POST.
 
 ### 4. Stop
 
@@ -83,10 +153,11 @@ curl http://localhost:8080/actuator/health
 
 ## API
 
-Both endpoints live under `/api/v1/events`. Machine-readable OpenAPI is served at
-`/v3/api-docs` and the UI at `/swagger-ui/index.html` — **disabled by default** (D5);
-enable them with the dev profile, e.g. `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`.
-Documentation requires the API key like every other non-health endpoint.
+Both endpoints live under `/api/v1/events` and require the API key. Machine-readable OpenAPI
+is served at `/v3/api-docs`, the UI at `/swagger-ui/index.html` — both **disabled by default**
+(D5); enable them with the dev profile, e.g.
+`./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`. Documentation requires the API
+key like every other non-health endpoint.
 
 > A plain browser visit of the Swagger UI cannot attach the `X-API-Key` header, so the UI
 > answers `401` and will not load. Open it through a header-capable client (a browser
@@ -96,6 +167,93 @@ Documentation requires the API key like every other non-health endpoint.
 > ```bash
 > curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/v3/api-docs
 > ```
+
+### Record an event (POST)
+
+`POST /api/v1/events` — idempotent per `eventId` (D4). Body: `eventId` (client-generated, max
+128 chars), `userId`, `eventType`, `source`, `occurredAt` (strict ISO-8601 with offset, within
+`0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z`), optional `metadata` (any JSON value).
+`receivedAt` is set by the server.
+
+```bash
+curl -sS -i -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+       "eventType":"payment.settled","source":"core-banking",
+       "occurredAt":"2026-10-18T12:00:00Z"}'
+```
+
+Real response (new event):
+
+```text
+HTTP/1.1 201
+{"id":761,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+ "eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z",
+ "metadata":null,"receivedAt":"2026-10-18T21:40:17.857688Z"}
+```
+
+Status semantics (all bodies carry the stored/event record; the internal `content_hash` is
+never exposed):
+
+- `201 Created` — new event stored.
+- `200 OK` — idempotent retry: same `eventId` with identical content (equivalent spellings
+  hash identically, e.g. a different UTC offset, a different JSON key order, `100` vs `100.0`).
+  The body is the stored record.
+- `409 Conflict` — same `eventId` with different content. Problem Details with the stored
+  record in the `existingEvent` extension; nothing is overwritten:
+
+```text
+HTTP/1.1 409
+{"detail":"an event with eventId 'eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40' already exists with different content","instance":"/api/v1/events","status":409,"title":"Conflict","existingEvent":{"id":761,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42","eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z","metadata":null,"receivedAt":"2026-10-18T21:40:17.857688Z"}}
+```
+
+`400 Bad Request` — validation failures as Problem Details with an `errors` extension (one
+`(field, message)` pair per violation, sorted by field):
+
+```text
+HTTP/1.1 400
+{"detail":"Request validation failed","instance":"/api/v1/events","status":400,"title":"Bad Request","errors":[{"field":"eventId","message":"eventId must not be blank"},{"field":"occurredAt","message":"occurredAt must be a strict ISO-8601 date-time with a UTC offset (Z or +/-hh:mm) between 0001-01-01T00:00:00Z and 9999-12-31T23:59:59.999999Z, e.g. 2026-10-18T12:00:00Z"},{"field":"userId","message":"userId must not be blank"}]}
+```
+
+Beyond Bean Validation, `400` also covers unreadable request parts: malformed JSON with an
+`errors` entry for the failing body, oversized or huge-exponent metadata numbers (bounded by a
+validator, `400` never `500`), NUL characters or numeric data PostgreSQL rejects (SQLState
+class 22, generic detail). Unexpected errors are a generic `500` Problem Details without
+internals; the server logs them.
+
+### List events (GET)
+
+`GET /api/v1/events` — filters and stable keyset pagination (D3):
+
+- Filters (optional, exact match): `userId`, `eventType`, `source`; a blank value counts as no
+  filter. `occurredFrom`/`occurredTo` are inclusive bounds, strict ISO-8601 with offset, inside
+  the same supported range as `occurredAt`.
+- Pagination: newest first (`occurredAt DESC, eventId DESC`). Echo the previous response's
+  `nextCursor` verbatim as `cursor`; `nextCursor` is only set when more results exist and is
+  null on the last page. `size` is 1..100 (default 20). There is deliberately no total count;
+  a page request is a single SELECT of at most `size + 1` rows.
+- Errors: `400 Bad Request` Problem Details for a malformed cursor, a non-ISO-8601 or
+  out-of-range bound, an inverted range or an out-of-range `size` — the detail names the
+  offending parameter.
+
+```bash
+curl -sS -H "X-API-Key: local-dev-key" 'http://localhost:8080/api/v1/events?userId=user-42&size=10'
+```
+
+Real response:
+
+```text
+{"items":[{"id":761,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+ "eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z",
+ "metadata":null,"receivedAt":"2026-10-18T21:40:17.857688Z"}],"nextCursor":null}
+```
+
+Next page:
+
+```bash
+curl -sS -H "X-API-Key: local-dev-key" \
+  'http://localhost:8080/api/v1/events?cursor=<nextCursor-from-the-previous-page>'
+```
 
 ## Authentication
 
@@ -111,63 +269,18 @@ values, `MessageDigest.isEqual`).
 - `test` profile: `test-api-key`.
 - `prod` profile: fails fast at startup when `API_KEY` is missing or blank
   (`IllegalStateException`), so a misconfigured deployment never serves traffic.
-- Missing or wrong key → `401 Unauthorized` as Problem Details
-  (`application/problem+json`, `title: Unauthorized`, `detail` naming `X-API-Key`), never
-  a log leak or 5xx. The key itself is never logged.
-- Exactly one `X-API-Key` header is expected per request; if a proxy or client emits the
-  header twice, the first value wins under the current servlet-container behavior.
-
-### Record an event
-
-`POST /api/v1/events` — idempotent per `eventId` (D4):
-
-- Body: JSON with `eventId` (client-generated, max 128 chars), `userId`, `eventType`,
-  `source`, `occurredAt` (strict ISO-8601 with offset, within
-  `0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z`), optional `metadata` (small JSON).
-- `201 Created` stores a new event; `200 OK` is an idempotent retry (same `eventId` with
-  identical content — body is the stored record); `409 Conflict` is the same `eventId` with
-  different content (stored record in the `existingEvent` extension); `400 Bad Request`
-  covers validation failures (Problem Details, `errors` extension). `receivedAt` is set by
-  the server.
-
-```bash
-curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
-  -H 'Content-Type: application/json' \
-  -d '{"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
-       "eventType":"payment.settled","source":"core-banking",
-       "occurredAt":"2026-10-18T12:00:00Z"}'
-```
-
-(`local-dev-key` is the safe local default; in a CI-style `test` run the value is
-`test-api-key`.)
+- Missing or wrong key → `401 Unauthorized` as Problem Details (`application/problem+json`),
+  plus `WWW-Authenticate: X-API-Key`; the body never echoes a submitted key and the key is
+  never logged:
 
 ```text
-{"id":1,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
- "eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z",
- "metadata":null,"receivedAt":"2026-10-18T12:00:00.123456Z"}
+HTTP/1.1 401
+{"type":"about:blank","title":"Unauthorized","status":401,
+ "detail":"Missing or invalid X-API-Key header. Send the static API key in the X-API-Key header."}
 ```
 
-### List events
-
-`GET /api/v1/events` — filters and stable keyset pagination (D3):
-
-- Filters (optional, exact match): `userId`, `eventType`, `source`; a blank value counts as
-  no filter. `occurredFrom`/`occurredTo` are inclusive bounds, strict ISO-8601 with offset and
-  inside the same `0001..9999` supported range as `occurredAt`.
-- Pagination: newest first (`occurredAt DESC, eventId DESC`). Echo the previous response's
-  `nextCursor` verbatim as `cursor`; `nextCursor` is only set when more results exist and is
-  null on the last page. `size` is 1..100 (default 20). There is deliberately no total
-  count; a page request is a single SELECT of at most `size + 1` rows.
-- Errors: `400 Bad Request` Problem Details for a malformed cursor, a non-ISO-8601 or
-  out-of-range bound, an inverted range or an out-of-range `size` — the detail names the
-  offending parameter.
-
-```bash
-curl -sS -H "X-API-Key: local-dev-key" \
-  'http://localhost:8080/api/v1/events?userId=user-42&size=10'
-curl -sS -H "X-API-Key: local-dev-key" \
-  'http://localhost:8080/api/v1/events?cursor=<nextCursor-from-the-previous-page>'
-```
+- Exactly one `X-API-Key` header is expected per request; if a proxy or client emits the
+  header twice, the first value wins under the current servlet-container behavior.
 
 ## Demo
 
@@ -233,22 +346,22 @@ Summary
   eventIds    : demo-run-1-0, demo-run-1-1, demo-run-1-2, demo-run-1-3, demo-run-1-4, demo-run-1-5
 ```
 
-The second run is the idempotent replay (same eventIds, identical content → `200`, D4).
-The client exits `0` when every request got a 2xx, `1` when a connection failed or any
-status ≥ 400 came back, and `2` on usage errors; invalid `--base-url` values (not an
-absolute http/https URL) are rejected up front as usage errors and trailing slashes are
-stripped so request paths never double the slash.
+The second run is the idempotent replay (same eventIds, identical content → `200`, D4). The
+client exits `0` when every request got a 2xx, `1` when a connection failed or any status
+≥ 400 came back, and `2` on usage errors; an invalid `--base-url` (not an absolute
+http/https URL) is rejected up front as a usage error, and trailing slashes are stripped so
+request paths never double the slash.
 
 ### 2. Browser demo (T6.2)
 
-Open <http://localhost:8080/demo/index.html> in a browser. The page itself is public
-(no key needed to load it); paste the API key into the key input and every API call from
-the page carries it as the `X-API-Key` header. The page offers filter fields (`userId`,
-`eventType`, `source`, `occurredFrom`, `occurredTo`, `size`), a "Send sample event" form, a
-results table with `id`/`eventId`/`userId`/`eventType`/`source`/`occurredAt`/`receivedAt`/
-`metadata` and a "Load more" button walking the keyset cursor. Errors render as the
-RFC 9457 Problem Details they really are (401 without a key, 409 conflicts with the
-`existingEvent` extension, 400 field errors).
+Open <http://localhost:8080/demo/index.html> in a browser. The page itself is public (no key
+needed to load it); paste the API key into the key input and every API call from the page
+carries it as the `X-API-Key` header. The page offers filter fields (`userId`, `eventType`,
+`source`, `occurredFrom`, `occurredTo`, `size`), a "Send sample event" form, a results table
+with `id`/`eventId`/`userId`/`eventType`/`source`/`occurredAt`/`receivedAt`/`metadata` and a
+"Load more" button walking the keyset cursor. Errors render as the RFC 9457 Problem Details
+they really are (401 without a key, 409 conflicts with the `existingEvent` extension, 400
+field errors).
 
 ![AuditBox demo page: API key input, filters, a table of loaded events and the nextCursor badge](docs/images/demo.png)
 
@@ -259,15 +372,14 @@ not a secret.
 
 ### 3. Dedupe script (T6.3)
 
-One command reproducing the D4 concurrency behavior end to end — N parallel identical
-POSTs (default 10: exactly one `201`, the rest `200`, exactly one DB row), an identical
-retry (`200`), different content on the same eventId (`409` with the `existingEvent`
-extension) and a fresh read page showing the single row. Exits non-zero on any failed
-expectation; every run uses a fresh, per-process eventId (wall-clock second plus PID), so
-back-to-back and even overlapping reruns stay valid. Configure with `BASE_URL`, `API_KEY`,
-`DB_PORT` (the fallback host port used only when docker is unavailable), `CONCURRENCY`,
-`DB_CONTAINER` (container for the row-count psql call) and, for that fallback,
-`DB_NAME`/`DB_USER`/`DB_PASSWORD`:
+One command reproducing the D4 concurrency behavior end to end — N parallel identical POSTs
+(default 10: exactly one `201`, the rest `200`, exactly one DB row), an identical retry
+(`200`), different content on the same eventId (`409` with the `existingEvent` extension) and
+a fresh read page showing the single row. Exits non-zero on any failed expectation; every run
+uses a fresh, per-process eventId, so back-to-back and even overlapping reruns stay valid.
+Configure with `BASE_URL`, `API_KEY`, `DB_PORT` (the fallback host port used only when docker
+is unavailable), `CONCURRENCY`, `DB_CONTAINER` (container for the row-count psql call) and,
+for that fallback, `DB_NAME`/`DB_USER`/`DB_PASSWORD`:
 
 ```bash
 ./scripts/dedupe-demo.sh
@@ -310,16 +422,81 @@ AuditBox dedupe demo
 ALL CHECKS PASSED (4 scenarios): idempotency behavior (D4) reproduced end to end
 ```
 
-(The transcript above is a real run with two long JSON lines re-wrapped for readability;
-your own run reproduces the same shape with a fresh eventId.)
+(The transcript above is a real run with two long JSON lines re-wrapped for readability; your
+own run reproduces the same shape with a fresh eventId.)
 
-## Testing
+## Testing and evidence
 
-Placeholder — filled in Stage 7 with the test/evidence matrix. Today, `./mvnw verify` runs the
-full unit and integration suite against a real PostgreSQL (Testcontainers,
-`postgres:18-alpine`), including the write API, the idempotency/conflict paths and the
-concurrency scenarios.
+Run the whole suite (requires Docker for Testcontainers; no pre-started database needed):
+
+```bash
+./mvnw verify
+```
+
+The suite (JUnit 5 + Testcontainers against the pinned `postgres:18-alpine` image, real HTTP
+on a random port) covers, per class:
+
+| Test class | Covers |
+|---|---|
+| `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
+| `EventsSchemaMigrationTest` | Flyway V1 applies on a clean database; columns, types, nullability, defaults, unique constraint (rejecting SQLState 23505), indexes (T2.1) |
+| `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
+| `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, OpenAPI, 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
+| `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
+| `EventCursorTest` | cursor codec unit tests: round trips and every strict rejection (T4.1/T4.2) |
+| `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries, constant-time rejects without allocations (D10/D12) |
+| `ApiKeySecurityTest` | 401/401/201 pattern, key echo, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
+| `ApiKeyMatcherTest` | constant-time matcher unit rules incl. whitespace handling (T5.1) |
+| `ApiKeyProdRequirementTest` | prod fail-fast: missing/blank/whitespace key, success with a key (T5.1) |
+| `SampleEventClientTest` | demo client: config parsing, base-url validation, exit codes, eventId scheme, payload determinism (T6.1) |
+| `DemoStaticPageTest` | demo page is public, contains the expected elements, embeds no secrets; the events API stays key-protected (T6.2) |
+
+Which acceptance criterion each test proves: the **acceptance evidence matrix in
+[docs/plan.md](docs/plan.md)** (T7.1) maps every criterion of stages 0–6 to its exact
+artefact, including the evidence that is deliberately live/manual (compose walk-through,
+browser demo, dedupe transcript) and the recorded evidence gaps.
+
+The demo transcripts and the screenshot above are real runs, not mock-ups; API responses in
+this README were captured from a live local run.
 
 ## Decisions
 
-Placeholder — decision log with rationale: [docs/decisions.md](docs/decisions.md).
+Every design decision with context, decision and rationale is in
+[docs/decisions.md](docs/decisions.md) (D1–D15), owner-approved unless a review round changed
+it. Short summary:
+
+- **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
+  optional metadata JSON, server adds `receivedAt`.
+- **D2** filters: exact match on user/type/source plus `occurredAt` range; no free-text search.
+- **D3** keyset pagination `(occurred_at DESC, event_id DESC)` with an opaque cursor; no total
+  count; offset pagination rejected.
+- **D4** idempotency: unique `event_id` + canonical content hash; identical retry → 200 with
+  the stored record, different content → 409; races resolved from the unique violation.
+- **D5** auth: static `X-API-Key`, constant-time check, health public, prod fail-fast,
+  Swagger dev-profile only.
+- **D6–D8** documentation structure (few central docs, no per-task files), repository language
+  (English), demo scope (no video).
+- **D9** stack baseline: Java 21 LTS, Spring Boot 4.1.1, Maven wrapper, Flyway 12.4,
+  Testcontainers 2.0.5, springdoc 3.1.1, `postgres:18-alpine`; Jackson 3 (plus Jackson 2
+  restrictions) note.
+- **D10** canonical content hash rules: SHA-256, sorted keys, UTC microsecond truncation,
+  exact decimals with bounded digits, absent ≡ null metadata.
+- **D11** events schema v1: one table, named constraints and indexes, `received_at` vs
+  `created_at` intent.
+- **D12** write API contract and idempotency mechanics: status codes, Problem Details shapes,
+  validation bounds, `REQUIRES_NEW` insert, SQLState 23505 handling.
+- **D13** list API contract: filters, bounds, cursor codec and its size bound, one-SELECT
+  query mechanics, error behavior.
+- **D14** security chain details: filtering scheme, comparison, response shapes, docs gating.
+- **D15** demo package: client, browser page, dedupe script and their reproducibility rules.
+
+## Next steps
+
+- **Stage 8 — independent final review and handoff** (per [docs/plan.md](docs/plan.md)): a
+  read-only full-diff/docs review round, then the final acceptance pass and cost report.
+- **Deferred by design** (recorded in decisions, revisit only with real need): composite
+  filter indexes once real query patterns justify them (D11), importer support for
+  overriding `received_at` to preserve original receipt times (D11), anything the passed
+  plans and reviews rejected as scope creep.
+
+An event platform (e.g. Kafka), additional services, and video demos remain out of scope.
