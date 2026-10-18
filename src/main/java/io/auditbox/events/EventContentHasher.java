@@ -180,8 +180,11 @@ public final class EventContentHasher {
 	 * Converts any numeric node to the exact BigDecimal used for canonicalization.
 	 * DoubleNode/FloatNode go through {@link BigDecimal#valueOf(double)} (the shortest
 	 * decimal that round-trips the value); decimal and integer nodes keep their exact value.
+	 *
+	 * <p>Package-visible so {@link ValidMetadataValidator} bounds exactly the values the
+	 * hash canonicalizes — validation and hashing cannot drift apart (D10).
 	 */
-	private static BigDecimal canonicalNumber(JsonNode node) {
+	static BigDecimal canonicalNumber(JsonNode node) {
 		if (node.isBigDecimal()) {
 			return node.decimalValue();
 		}

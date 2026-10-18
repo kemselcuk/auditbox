@@ -11,6 +11,21 @@ spring:
       # values survive request parsing end to end (1.00000000000000000001 != 1). Hibernate's
       # jsonb read path needs the same feature: see JsonFormatMapperConfiguration.
       use-big-decimal-for-floats: true
+    write:
+      # Stable numeric rendering (review round 2, F4): BigDecimal values are written as
+      # plain decimals without exponent notation (1e+3 -> 1000, 1e-7 -> 0.0000001), so the
+      # 201 in-memory body renders exactly like the 200/409 jsonb-read form.
+      WRITE_BIGDECIMAL_AS_PLAIN: true
+    factory:
+      constraints:
+        read:
+          # Aligned with the metadata number bounds of ValidMetadataValidator (review round
+          # 2, F1/F2): an accepted metadata number has at most 1000 integer + 1000 fractional
+          # digits, i.e. up to 2002 plain decimal characters (e.g. an idempotent retry that
+          # echoes the API response verbatim). Jackson's default 1000 would 400 such legal
+          # literals; oversized/bound-exceeding numbers are rejected with a precise field
+          # error by the validator instead.
+          max-number-length: 4096
   jpa:
     # The database schema is owned by Flyway migrations (from Stage 2 on); Hibernate only
     # validates. With no entities in Stage 1, validate is a no-op against the empty schema

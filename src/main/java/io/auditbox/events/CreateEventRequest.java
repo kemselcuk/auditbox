@@ -19,7 +19,9 @@ import tools.jackson.databind.JsonNode;
  *
  * <p>The metadata tree is read by the Spring MVC mapper with
  * {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS} (application.yml, D10) so client
- * decimals reach the hash and storage exactly.
+ * decimals reach the hash and storage exactly, and its numbers are bounded by
+ * {@link ValidMetadata}: no metadata number may exceed the supported digit counts of the
+ * canonical decimal form (review round 2, F1/F2).
  */
 @Schema(description = "Event ingestion request (D1). The eventId is the idempotency key (D4).")
 public record CreateEventRequest(
@@ -56,7 +58,10 @@ public record CreateEventRequest(
 				example = "2026-10-18T12:00:00Z")
 		String occurredAt,
 
+		@ValidMetadata
 		@Schema(description = "Optional metadata: any JSON value. Absent and explicit null are the same content "
-				+ "(D10). Client decimals are preserved exactly.", example = "{\"amount\":125.50,\"currency\":\"EUR\"}")
+				+ "(D10). Client decimals are preserved exactly, bounded to the supported canonical "
+				+ "digit counts (1000 integer / 1000 fractional digits).",
+				example = "{\"amount\":125.50,\"currency\":\"EUR\"}")
 		JsonNode metadata) {
 }

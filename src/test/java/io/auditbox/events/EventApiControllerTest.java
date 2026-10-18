@@ -63,12 +63,21 @@ class EventApiControllerTest {
 
 	/**
 	 * Metadata is re-read in tests with the exact configuration production must use (D10):
-	 * JSON floats as exact BigDecimal. Assertions compare digits, so the test-side mapper must
-	 * not collapse them either.
+	 * JSON floats as exact BigDecimal and the number-length constraint aligned with the
+	 * validation bounds {@link JsonFormatMapperConfiguration}. Assertions compare digits, so
+	 * the test-side mapper must not collapse them either.
 	 */
-	private static final JsonMapper JSON = JsonMapper.builder()
-			.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
-			.build();
+	private static final JsonMapper JSON = jsonMapper();
+
+	private static JsonMapper jsonMapper() {
+		return JsonMapper.builder(tools.jackson.core.json.JsonFactory.builder()
+				.streamReadConstraints(tools.jackson.core.StreamReadConstraints.builder()
+						.maxNumberLength(JsonFormatMapperConfiguration.MAX_NUMBER_LENGTH)
+						.build())
+				.build())
+				.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+				.build();
+	}
 
 	private static final String BASIC_AUTH = "Basic " + Base64.getEncoder()
 			.encodeToString("test-user:test-password".getBytes(StandardCharsets.UTF_8));
@@ -394,10 +403,23 @@ class EventApiControllerTest {
 		assertThat(jsonbType(eventId, "metadata")).isEqualTo("object");
 		assertThat(jsonbText(eventId, "metadata->>'amount'")).isEqualTo("1.00000000000000000001");
 
-		// Posting 1 for the same eventId is DIFFERENT content: 409, not an idempotent 200.
+		// A retry reads the jsonb column back through Hibernate end to end: the 200 body
+		// must carry the exact digits too (review round 2, F5).
+		HttpResponse<String> retry = post(eventJson(eventId, "user-precision", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1.00000000000000000001}"));
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(JSON.readTree(retry.body()).get("metadata").get("amount").asString())
+				.isEqualTo("1.00000000000000000001");
+
+		// Posting 1 for the same eventId is DIFFERENT content: 409, and the stored record in
+		// the existingEvent extension (read FROM the database right here) carries the exact
+		// digits as well, not just the 201 in-memory response (review round 2, F5).
 		HttpResponse<String> oneInstead = post(eventJson(eventId, "user-precision", "payment.settled",
 				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1}"));
 		assertThat(oneInstead.statusCode()).isEqualTo(409);
+		JsonNode existingEvent = JSON.readTree(oneInstead.body()).get("existingEvent");
+		assertThat(existingEvent.get("metadata").get("amount").asString())
+				.isEqualTo("1.00000000000000000001");
 		assertThat(eventRowCount(eventId)).isEqualTo(1);
 	}
 
@@ -426,8 +448,9 @@ class EventApiControllerTest {
 	@Test
 	void oversizedNumberInMetadataReturns400Not500() throws Exception {
 		String eventId = uniqueEventId();
-		// Jackson's default StreamReadConstraints limit is 1000 digits per number literal;
-		// 1001 digits must surface as client error, never as a 500.
+		// A number literal one digit beyond the supported bound must surface as a client
+		// error with a precise metadata field error, never as a 500 (review round 2, F1/F2;
+		// the reject itself is bounded by ValidMetadataValidator).
 		String oversized = "{\"eventId\":\"%s\",\"userId\":\"user-1\",\"eventType\":\"payment.settled\","
 				+ "\"source\":\"core-banking\",\"occurredAt\":\"2026-10-18T12:00:00Z\","
 				+ "\"metadata\":{\"amount\":%s}}".formatted(eventId, "9".repeat(1001));
@@ -438,6 +461,216 @@ class EventApiControllerTest {
 		assertThat(response.headers().firstValue("Content-Type").orElse(""))
 				.startsWith("application/problem+json");
 		assertThat(JSON.readTree(response.body()).get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	// ---------------------------------------------------------------------
+	// Review round 2, F1/F2: metadata number bounds at validation
+	// ---------------------------------------------------------------------
+
+	/**
+	 * 1e999 canonicalizes to exactly 1000 integer digits: inside the bound (F1), stored and
+	 * idempotently replayed through the jsonb read path.
+	 */
+	@Test
+	void metadataNumberAtTheIntegerDigitBoundIsAcceptedAndReplays() throws Exception {
+		String eventId = uniqueEventId();
+		String body = eventJson(eventId, "user-number-bound", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"amount\":1e999}");
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		// Exactly the 1000 canonical integer digits, rendered as a plain decimal in both
+		// bodies (F4): the 201 in-memory form and the 200 jsonb-read form agree.
+		String expectedDigits = "\"amount\":1" + "0".repeat(999);
+		assertThat(first.body()).contains(expectedDigits).doesNotContain("E+");
+		assertThat(retry.body()).isEqualTo(first.body());
+	}
+
+	/**
+	 * 1e1000 canonicalizes to 1001 integer digits: rejected with a metadata field error
+	 * (today it would be accepted with 201 and then fail unreadable on the read path), no
+	 * row stored.
+	 */
+	@Test
+	void metadataNumberBeyondTheIntegerDigitBoundReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-number-bound", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1e1000}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(fieldNames(problem)).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * A 12-byte literal with a ten-digit exponent is rejected in constant time, before any
+	 * large allocation could happen (F1). The timing bound is deliberately loose (it bounds
+	 * the absence of OOM/expansion, not network latency).
+	 */
+	@Test
+	void metadataNumberWithHugeExponentReturns400Quickly() throws Exception {
+		String eventId = uniqueEventId();
+
+		long started = System.nanoTime();
+		HttpResponse<String> response = post(eventJson(eventId, "user-number-huge", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":1e2000000000}"));
+		long durationMs = (System.nanoTime() - started) / 1_000_000;
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(fieldNames(JSON.readTree(response.body()))).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+		assertThat(durationMs).isLessThan(2000);
+	}
+
+	/**
+	 * 1e-1000 canonicalizes to exactly 1000 fractional digits: inside the bound (F1);
+	 * the plain-decimal jsonb form (0.000...1, 1001 digits) read-back works end to end.
+	 */
+	@Test
+	void metadataNumberAtTheFractionDigitBoundIsAcceptedAndReplays() throws Exception {
+		String eventId = uniqueEventId();
+		String body = eventJson(eventId, "user-fraction-bound", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"rate\":1e-1000}");
+		String expectedPlainForm = "\"rate\":0." + "0".repeat(999) + "1";
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		assertThat(first.body()).contains(expectedPlainForm).doesNotContain("E-");
+		assertThat(retry.body()).isEqualTo(first.body());
+	}
+
+	/**
+	 * 1e-1001 canonicalizes to 1001 fractional digits: beyond the bound, 400 with a
+	 * metadata field error, no row stored.
+	 */
+	@Test
+	void metadataNumberBeyondTheFractionDigitBoundReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-fraction-bound", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"rate\":1e-1001}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(fieldNames(JSON.readTree(response.body()))).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * The widest accepted shape — 1000 integer and 1000 fractional digits at once — renders
+	 * to a 2001-digit plain decimal both on the wire (echo-back retry) and in the jsonb
+	 * read-back; this is exactly what the number-length read constraints are raised above
+	 * the default 1000 digits for (F1/F2) — an accepted value must never become an
+	 * unreadable 500 on replay.
+	 */
+	@Test
+	void metadataNumberUsingBothDigitBoundsEchoesBackIdempotently() throws Exception {
+		String eventId = uniqueEventId();
+		String number = digits(1000) + "." + digits(1000);
+		String body = eventJson(eventId, "user-wide-bound", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"amount\":" + number + "}");
+		String expectedPlainForm = "\"amount\":" + number;
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		assertThat(first.body()).contains(expectedPlainForm).doesNotContain("E+");
+		assertThat(JSON.readTree(retry.body())).isEqualTo(JSON.readTree(first.body()));
+		assertThat(jsonbText(eventId, "metadata->>'amount'")).isEqualTo(number);
+	}
+
+	private static String digits(int count) {
+		return "9".repeat(count);
+	}
+
+	// ---------------------------------------------------------------------
+	// Review round 2, F4: stable plain-decimal rendering in responses
+	// ---------------------------------------------------------------------
+
+	/**
+	 * The 201 in-memory body and the 200/409 jsonb-read form must render BigDecimal values
+	 * identically: plain decimals (1e2 is 100, 1e-7 is 0.0000001), never scientific
+	 * notation. The retry echoes the API's own body verbatim and stays idempotent.
+	 */
+	@Test
+	void decimalMetadataNumbersRenderAsPlainDecimalsInEveryResponse() throws Exception {
+		String eventId = uniqueEventId();
+		String body = eventJson(eventId, "user-plain", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"amount\":1e2,\"rate\":1e-7}");
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		assertThat(first.body()).contains("\"amount\":100", "\"rate\":0.0000001")
+				.doesNotContain("E+").doesNotContain("E-");
+		// The jsonb-read form renders identically (plain decimals; jsonb only normalizes
+		// object key order), so echoing the response back must be an idempotent retry, not
+		// a parse failure or a false conflict.
+		assertThat(retry.body()).contains("\"amount\":100", "\"rate\":0.0000001")
+				.doesNotContain("E+").doesNotContain("E-");
+		assertThat(JSON.readTree(retry.body())).isEqualTo(JSON.readTree(first.body()));
+	}
+
+	// ---------------------------------------------------------------------
+	// Review round 2, F3: client-caused SQL data errors are 400, not 500
+	// ---------------------------------------------------------------------
+
+	/**
+	 * PostgreSQL rejects a NUL byte in a text column at insert time (SQLState 22021, "data
+	 * exception"): the request is at fault, so the response is 400, not 500, and no row is
+	 * stored.
+	 */
+	@Test
+	void nullCharacterInUserIdSurfacesAs400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post("{\"eventId\":\"%s\",\"userId\":\"user\\u0000-1\","
+				+ "\"eventType\":\"payment.settled\",\"source\":\"core-banking\","
+				+ "\"occurredAt\":\"2026-10-18T12:00:00Z\"}".formatted(eventId));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * PostgreSQL jsonb cannot store a NUL inside a string (SQLState 22P05): same client-error
+	 * treatment as the text-column case (F3).
+	 */
+	@Test
+	void nullCharacterInsideMetadataStringSurfacesAs400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-1", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"note\":\"before\\u0000after\"}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("title").stringValue()).isEqualTo("Bad Request");
 		assertThat(eventRowCount(eventId)).isEqualTo(0);
 	}
 
@@ -549,5 +782,12 @@ class EventApiControllerTest {
 	private String jsonbType(String eventId, String jsonExpression) {
 		return jdbcTemplate.queryForObject("SELECT jsonb_typeof(" + jsonExpression + ") FROM events WHERE event_id = ?",
 				String.class, eventId);
+	}
+
+	/** The violated fields of a 400 Problem Details body (the errors extension of T3.1). */
+	private static List<String> fieldNames(JsonNode problem) {
+		List<String> fields = new ArrayList<>();
+		problem.get("errors").forEach(error -> fields.add(error.get("field").stringValue()));
+		return List.copyOf(fields);
 	}
 }
