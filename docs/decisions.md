@@ -86,3 +86,35 @@ decision → rationale/alternatives.
   - Spring Boot 4 renames applied vs the 3.x names: `spring-boot-starter-web` →
     `spring-boot-starter-webmvc`, dedicated `spring-boot-starter-flyway`, Testcontainers 2.x
     artifact names (`testcontainers-postgresql`, `testcontainers-junit-jupiter`).
+  - Jackson 3 note (Stage 2 evidence): Boot 4 wires **Jackson 3** (`tools.jackson.*`, 3.1.5), not
+    Jackson 2. A Jackson 2.21.5 jar remains on the test classpath (via springdoc/yaml), so imports
+    from the wrong package can still compile. Application code must import `tools.jackson`.
+
+## D10 — Canonical content hash (T2.2)
+
+- Decision: SHA-256 (lowercase hex, 64 chars) over a single canonical JSON object containing exactly
+  `eventId`, `userId`, `eventType`, `source`, `occurredAt` (normalized to the UTC instant string) and
+  `metadata` (canonicalized). Keys sorted at every level (`ORDER_MAP_ENTRIES_BY_KEYS`). Absent
+  metadata ≡ explicit JSON null → JSON `null`; any present value (even `{}`) is different content.
+  Numbers canonicalized as exact decimals (`stripTrailingZeros().toPlainString()`), so `1`, `1.0`
+  and `1.00` hash identically. `occurredAt` must be strict ISO-8601 with offset; malformed input
+  fails fast (Bean Validation surfaces it as 400 in Stage 3). Null content fields fail fast. The
+  utility (`io.auditbox.events.EventContentHasher`) is stateless/static and exposes `canonicalJson()`
+  for inspectability.
+- Known limit: a metadata number that reached the tree as a JSON double canonicalizes through its
+  shortest round-trip decimal (`Double.toString`). Stage 3 must read metadata with
+  `USE_BIG_DECIMAL_FOR_FLOATS` to keep client decimals exact end to end.
+- Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
+  Rejected: hashing raw request bytes (formatting changes would break idempotency).
+
+## D11 — Events schema v1 (T2.1)
+
+- Decision: one `events` table: identity `id` PK; named unique constraint `uq_events_event_id` on
+  `event_id` (D4 idempotency guard); keyset index `(occurred_at DESC, event_id DESC)` (D3);
+  single-column B-tree indexes on `user_id`, `event_type`, `source` for now; `timestamptz`
+  everywhere; `metadata jsonb` nullable; `received_at`/`created_at` default `now()`; `content_hash`
+  text not null.
+- Rationale: plain and indexable; composite filter indexes deferred until Stage 4 EXPLAINs show a
+  need (noted in the migration comment).
+- Evidence: schema test asserts columns/types/nullability/defaults/constraints/indexes on
+  Testcontainers `postgres:18-alpine`; the compose database shows `flyway_schema_history` at v1.

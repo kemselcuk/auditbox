@@ -12,7 +12,7 @@ idempotent per `eventId`, and access is authenticated with a static `X-API-Key`.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
-Status: Stage 1 (skeleton and local run) — roadmap in [docs/plan.md](docs/plan.md).
+Status: Stage 2 (schema and canonical content hash) — roadmap in [docs/plan.md](docs/plan.md).
 
 ## Prerequisites
 
@@ -49,12 +49,14 @@ Expected startup (abridged real output):
 
 ```text
 ... o.f.core.FlywayExecutor  : Database: jdbc:postgresql://localhost:5433/auditbox (PostgreSQL 18.6)
-... o.f.core.internal.command.DbValidate : Successfully validated 0 migrations (execution time 00:00.005s)
+... o.f.core.internal.command.DbValidate : Successfully validated 1 migration (execution time 00:00.014s)
+... o.f.core.internal.command.DbMigrate : Current version of schema "public": 1
 ... o.s.boot.tomcat.TomcatWebServer : Tomcat started on port 8080 (http) with context path '/'
-... io.auditbox.AuditBoxApplication : Started AuditBoxApplication in 2.151 seconds (process running for 2.31)
+... io.auditbox.AuditBoxApplication : Started AuditBoxApplication in 2.348 seconds (process running for 2.54)
 ```
 
-`No migrations found` is expected until Stage 2 adds the first Flyway migration.
+Flyway applies `V1__create_events.sql` on first start; later starts validate the migration and
+report that the schema is up to date.
 
 ### 3. Check it is alive
 
@@ -86,9 +88,9 @@ Placeholder — filled in Stage 6 (sample-event client, single-page web demo, de
 
 ## Testing
 
-Placeholder — filled in Stage 7 with the test/evidence matrix. Today, `./mvnw verify` boots the
-application against a Testcontainers PostgreSQL (`postgres:18-alpine`) and asserts
-`/actuator/health` reports `UP`.
+Placeholder — filled in Stage 7 with the test/evidence matrix. Today, `./mvnw verify` runs 14
+tests: the health integration test (Testcontainers PostgreSQL `postgres:18-alpine`), 8
+canonical-content-hash unit tests, and 5 schema-migration assertions.
 
 ## Decisions
 

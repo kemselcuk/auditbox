@@ -38,8 +38,8 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T2.1 | Flyway V1: `events` table (`event_id` unique, `user_id`, `event_type`, `source`, `occurred_at timestamptz`, `received_at timestamptz`, `metadata jsonb`, `content_hash`, `created_at`) + indexes: unique(`event_id`), (`occurred_at DESC, event_id DESC`), filter columns | Migration applies on a clean database (Testcontainers); schema asserted by test | in progress |
-| T2.2 | Canonical content hash (deterministic JSON over core fields + metadata, UTC normalized) | Unit tests: key order and timezone normalization stable; different content → different hash; rule documented in `decisions.md` | in progress |
+| T2.1 | Flyway V1: `events` table (`event_id` unique, `user_id`, `event_type`, `source`, `occurred_at timestamptz`, `received_at timestamptz`, `metadata jsonb`, `content_hash`, `created_at`) + indexes: unique(`event_id`), (`occurred_at DESC, event_id DESC`), filter columns | Migration applies on a clean database (Testcontainers); schema asserted by test | done |
+| T2.2 | Canonical content hash (deterministic JSON over core fields + metadata, UTC normalized) | Unit tests: key order and timezone normalization stable; different content → different hash; rule documented in `decisions.md` | done |
 
 ### Stage 3 — POST /api/v1/events (idempotency + concurrency)
 
