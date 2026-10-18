@@ -31,15 +31,15 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T1.1 | Maven project (wrapper), Spring Boot 4.1.x, Java 21; dependencies: web, data-jpa, validation, security, flyway, postgresql, actuator, springdoc; `local`/`test` profiles; integration test booting the app against Testcontainers PostgreSQL and asserting `/actuator/health` UP | `./mvnw verify` green with real output; versions recorded in `decisions.md` | in progress |
-| T1.2 | `docker-compose.yml` (pinned PostgreSQL image, healthcheck, volume), `.env.example`, README "Getting started" draft | `docker compose config` valid; README steps reproduce a working local run; real outputs pasted in the report | pending |
+| T1.1 | Maven project (wrapper), Spring Boot 4.1.x, Java 21; dependencies: web, data-jpa, validation, security, flyway, postgresql, actuator, springdoc; `local`/`test` profiles; integration test booting the app against Testcontainers PostgreSQL and asserting `/actuator/health` UP | `./mvnw verify` green with real output; versions recorded in `decisions.md` | done |
+| T1.2 | `docker-compose.yml` (pinned PostgreSQL image, healthcheck, volume), `.env.example`, README "Getting started" draft | `docker compose config` valid; README steps reproduce a working local run; real outputs pasted in the report | done |
 
 ### Stage 2 — Schema and content hash
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T2.1 | Flyway V1: `events` table (`event_id` unique, `user_id`, `event_type`, `source`, `occurred_at timestamptz`, `received_at timestamptz`, `metadata jsonb`, `content_hash`, `created_at`) + indexes: unique(`event_id`), (`occurred_at DESC, event_id DESC`), filter columns | Migration applies on a clean database (Testcontainers); schema asserted by test | pending |
-| T2.2 | Canonical content hash (deterministic JSON over core fields + metadata, UTC normalized) | Unit tests: key order and timezone normalization stable; different content → different hash; rule documented in `decisions.md` | pending |
+| T2.1 | Flyway V1: `events` table (`event_id` unique, `user_id`, `event_type`, `source`, `occurred_at timestamptz`, `received_at timestamptz`, `metadata jsonb`, `content_hash`, `created_at`) + indexes: unique(`event_id`), (`occurred_at DESC, event_id DESC`), filter columns | Migration applies on a clean database (Testcontainers); schema asserted by test | in progress |
+| T2.2 | Canonical content hash (deterministic JSON over core fields + metadata, UTC normalized) | Unit tests: key order and timezone normalization stable; different content → different hash; rule documented in `decisions.md` | in progress |
 
 ### Stage 3 — POST /api/v1/events (idempotency + concurrency)
 
