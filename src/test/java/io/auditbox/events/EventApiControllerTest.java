@@ -9,7 +9,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -49,9 +48,8 @@ import static org.assertj.core.api.Assertions.within;
  * same pinned image as docker-compose.yml) and real HTTP on a random port (required for the
  * concurrency scenarios — the unique-violation race must go through the full server stack).
  *
- * <p>Requests authenticate with the temporary basic-auth credentials of the test profile
- * (application-test.yml, TemporarySecurityConfiguration); Stage 5 replaces this mechanism with
- * the X-API-Key filter (D5).
+ * <p>Requests authenticate with the static X-API-Key of the test profile (application-test.yml,
+ * {@code ApiKeySecurityConfiguration}); the key is the D5 authentication mechanism since Stage 5.
  *
  * <p>Every scenario uses a unique client-generated eventId so the tests are deterministic and
  * independent of execution order.
@@ -79,8 +77,7 @@ class EventApiControllerTest {
 				.build();
 	}
 
-	private static final String BASIC_AUTH = "Basic " + Base64.getEncoder()
-			.encodeToString("test-user:test-password".getBytes(StandardCharsets.UTF_8));
+	private static final String API_KEY = "test-api-key";
 
 	private static final int CONCURRENT_REQUESTS = 20;
 
@@ -860,7 +857,7 @@ class EventApiControllerTest {
 	@Test
 	void openApiDocsDescribeTheEventsPath() throws Exception {
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/v3/api-docs"))
-				.header("Authorization", BASIC_AUTH)
+				.header("X-API-Key", API_KEY)
 				.GET()
 				.build();
 		HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -897,7 +894,7 @@ class EventApiControllerTest {
 	private HttpResponse<String> post(String json) throws Exception {
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + EVENT_PATH))
 				.header("Content-Type", "application/json")
-				.header("Authorization", BASIC_AUTH)
+				.header("X-API-Key", API_KEY)
 				.POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
 				.build();
 		return client.send(request, HttpResponse.BodyHandlers.ofString());

@@ -10,11 +10,12 @@ AuditBox is a small event-history service: it will accept transaction/event hist
 store it in PostgreSQL, and serve it back with filters and stable keyset pagination. Target
 behavior: ingestion is idempotent per `eventId` (Stage 3), listing uses keyset pagination
 (Stage 4), and access is authenticated with a static `X-API-Key` (Stage 5). Today the skeleton,
-schema, canonical hash, write API, and filtered keyset-paginated listing are in place.
+schema, canonical hash, write API, filtered keyset-paginated listing, and the real
+X-API-Key authentication are all in place.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
-Status: Stage 4 (event listing API) — roadmap in [docs/plan.md](docs/plan.md).
+Status: Stage 5 (X-API-Key security) — roadmap in [docs/plan.md](docs/plan.md).
 
 ## Prerequisites
 
@@ -71,8 +72,8 @@ curl http://localhost:8080/actuator/health
 {"groups":["liveness","readiness"],"status":"UP"}
 ```
 
-`/actuator/health` is public; every other path requires authentication (Spring Security default)
-until Stage 5 replaces it with X-API-Key authentication.
+`/actuator/health` is public (compose-style health checks); every other path requires the static
+`X-API-Key` header (see [Authentication](#authentication)).
 
 ### 4. Stop
 
@@ -83,12 +84,27 @@ until Stage 5 replaces it with X-API-Key authentication.
 ## API
 
 Both endpoints live under `/api/v1/events`. Machine-readable OpenAPI is served at
-`/v3/api-docs` and the UI at `/swagger-ui/index.html` (enabled in all profiles until Stage 5
-restricts it). **Authentication today is the temporary
-HTTP basic auth** of the `local`/`test` profiles (Stage 5 replaces it with a static
-`X-API-Key` header — the examples below use the test-profile credentials; for a `local`
-run, pass the user Spring Boot generates and logs at startup, or set
-`SPRING_SECURITY_USER_NAME`/`SPRING_SECURITY_USER_PASSWORD`).
+`/v3/api-docs` and the UI at `/swagger-ui/index.html` — **disabled by default** (D5);
+enable them with the dev profile, e.g. `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`.
+Documentation requires the API key like every other non-health endpoint.
+
+## Authentication
+
+Every request except `/actuator/health/**` must carry the static API key in the
+`X-API-Key` header (decision [D5](docs/decisions.md)): a stateless Spring Security filter
+compares it against the configured key with a constant-time comparison (SHA-256 of both
+values, `MessageDigest.isEqual`).
+
+- Configuration: `auditbox.security.api-key`, bound from the `API_KEY` environment
+  variable (see [.env.example](.env.example)).
+- `local`/`dev` profiles: safe development default `local-dev-key` always works locally;
+  override with `API_KEY` for anything reachable by others.
+- `test` profile: `test-api-key`.
+- `prod` profile: fails fast at startup when `API_KEY` is missing or blank
+  (`IllegalStateException`), so a misconfigured deployment never serves traffic.
+- Missing or wrong key → `401 Unauthorized` as Problem Details
+  (`application/problem+json`, `title: Unauthorized`, `detail` naming `X-API-Key`), never
+  a log leak or 5xx. The key itself is never logged.
 
 ### Record an event
 
@@ -104,12 +120,15 @@ run, pass the user Spring Boot generates and logs at startup, or set
   the server.
 
 ```bash
-curl -sS -u test-user:test-password http://localhost:8080/api/v1/events \
+curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
   -H 'Content-Type: application/json' \
   -d '{"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
        "eventType":"payment.settled","source":"core-banking",
        "occurredAt":"2026-10-18T12:00:00Z"}'
 ```
+
+(`local-dev-key` is the safe local default; in a CI-style `test` run the value is
+`test-api-key`.)
 
 ```text
 {"id":1,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
@@ -133,9 +152,9 @@ curl -sS -u test-user:test-password http://localhost:8080/api/v1/events \
   offending parameter.
 
 ```bash
-curl -sS -u test-user:test-password \
+curl -sS -H "X-API-Key: local-dev-key" \
   'http://localhost:8080/api/v1/events?userId=user-42&size=10'
-curl -sS -u test-user:test-password \
+curl -sS -H "X-API-Key: local-dev-key" \
   'http://localhost:8080/api/v1/events?cursor=<nextCursor-from-the-previous-page>'
 ```
 

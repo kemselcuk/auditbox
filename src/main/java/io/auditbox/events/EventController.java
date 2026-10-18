@@ -77,8 +77,8 @@ public class EventController {
 	 * cursor, invalid or out-of-range date bound, NUL character or out-of-range size
 	 * becomes a 400 Problem Details response (via {@link InvalidEventQueryException})
 	 * instead of a framework type-mismatch error. Blank {@code userId}/{@code eventType}/
-	 * {@code source} values are treated as absent filters (F6). The temporary basic-auth
-	 * chain still applies (Stage 5 replaces it, D5).
+	 * {@code source} values are treated as absent filters (F6). Requests require the static
+	 * X-API-Key header (D5, T5.1), enforced by {@code ApiKeySecurityConfiguration}.
 	 *
 	 * <p>Repeated query parameters (review round 3, F5) are not explicitly rejected: Spring
 	 * MVC's request-parameter binding joins duplicate values with a comma, so

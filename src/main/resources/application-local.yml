@@ -6,3 +6,8 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:auditbox}
     username: ${DB_USER:auditbox}
     password: ${DB_PASSWORD:auditbox}
+
+# Safe local development API key (D5); override with API_KEY for anything exposed.
+auditbox:
+  security:
+    api-key: ${API_KEY:local-dev-key}

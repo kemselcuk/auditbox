@@ -1,0 +1,14 @@
+# Dev profile: human-facing OpenAPI documentation. Layered on top of another profile
+# (typically local, i.e. -Dspring-boot.run.profiles=local,dev); a dev-only run has no
+# datasource configuration and does not start.
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
+# Same safe local development API key as the local profile, so a local,dev run works
+# out of the box; /v3/api-docs and /swagger-ui/** require the key like every other path.
+auditbox:
+  security:
+    api-key: ${API_KEY:local-dev-key}

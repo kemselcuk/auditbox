@@ -43,10 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Stage 4 integration tests (plan tasks T4.1/T4.2) against a real PostgreSQL (Testcontainers,
  * same pinned image as docker-compose.yml) and real HTTP: GET /api/v1/events filters,
- * stable keyset pagination and negative cases. Requests authenticate with the temporary
- * basic-auth credentials of the test profile (application-test.yml,
- * {@code TemporarySecurityConfiguration}); Stage 5 replaces this mechanism with the
- * X-API-Key filter (D5).
+ * stable keyset pagination and negative cases. Requests authenticate with the static
+ * X-API-Key of the test profile (application-test.yml, {@code ApiKeySecurityConfiguration});
+ * the key is the D5 authentication mechanism since Stage 5.
  *
  * <p>Determinism: every scenario seeds its own events identified by a unique userId (and
  * unique eventIds), so the tests are independent of each other and of execution order
@@ -63,8 +62,7 @@ class EventListApiControllerTest {
 
 	private static final JsonMapper JSON = JsonMapper.builder().build();
 
-	private static final String BASIC_AUTH = "Basic " + Base64.getEncoder()
-			.encodeToString("test-user:test-password".getBytes(StandardCharsets.UTF_8));
+	private static final String API_KEY = "test-api-key";
 
 	/** Base instant of the seeding scenarios: whole minutes, so stored values are exact. */
 	private static final Instant BASE = Instant.parse("2026-10-18T00:00:00Z");
@@ -611,7 +609,7 @@ class EventListApiControllerTest {
 
 	private HttpResponse<String> get(String pathAndQuery) throws Exception {
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + pathAndQuery))
-				.header("Authorization", BASIC_AUTH)
+				.header("X-API-Key", API_KEY)
 				.GET()
 				.build();
 		return client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -630,7 +628,7 @@ class EventListApiControllerTest {
 	private HttpResponse<String> post(String json) throws Exception {
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/events"))
 				.header("Content-Type", "application/json")
-				.header("Authorization", BASIC_AUTH)
+				.header("X-API-Key", API_KEY)
 				.POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
 				.build();
 		return client.send(request, HttpResponse.BodyHandlers.ofString());

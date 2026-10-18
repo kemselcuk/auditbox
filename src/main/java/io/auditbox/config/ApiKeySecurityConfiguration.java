@@ -1,0 +1,56 @@
+package io.auditbox.config;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import jakarta.servlet.DispatcherType;
+
+/**
+ * Real, stateless {@code X-API-Key} security (decision D5, plan task T5.1) — replaces the
+ * Stage 3 temporary basic-auth chain, which was deleted together with the
+ * {@code spring.security.user.*} test credentials. Exactly one {@link SecurityFilterChain}
+ * remains, active in every profile:
+ *
+ * <ul>
+ *   <li>no CSRF (token-free API), no sessions ({@link SessionCreationPolicy#STATELESS}),
+ *       no form login, no HTTP basic — the only authentication mechanism is the
+ *       {@link ApiKeyAuthenticationFilter},</li>
+ *   <li>{@code /actuator/health/**} (health + nested liveness/readiness probes) is public;
+ *       everything else — the events API, every other actuator endpoint, and, when enabled,
+ *       {@code /v3/api-docs} and {@code /swagger-ui/**} — requires the key,</li>
+ *   <li>missing or wrong key &rarr; 401 Problem Details via
+ *       {@link ApiKeyAuthenticationEntryPoint},</li>
+ *   <li>{@link DispatcherType#ERROR} dispatches are permitted so an authenticated request to
+ *       an unmapped path or with an unsupported method still renders its 404/405 instead of
+ *       being turned into a 401 by the error page; the original request still had to pass the
+ *       key check (review of Stage 5).</li>
+ * </ul>
+ */
+@Configuration
+@EnableWebSecurity
+@EnableConfigurationProperties(ApiKeyProperties.class)
+public class ApiKeySecurityConfiguration {
+
+	@Bean
+	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyProperties properties) throws Exception {
+		return http
+				.csrf(csrf -> csrf.disable())
+				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+				.authorizeHttpRequests(authorize -> authorize
+						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+						.requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+						.anyRequest().authenticated())
+				.addFilterBefore(new ApiKeyAuthenticationFilter(properties),
+						UsernamePasswordAuthenticationFilter.class)
+				.exceptionHandling(exceptions -> exceptions
+						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint()))
+				.build();
+	}
+}

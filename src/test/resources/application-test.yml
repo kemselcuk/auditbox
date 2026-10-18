@@ -2,16 +2,23 @@
 # credentials are provided by @ServiceConnection at runtime. The entries below make the
 # configuration choices explicit and independent of base-file defaults.
 spring:
-  security:
-    user:
-      # Temporary basic-auth credentials for the Stage 3 integration tests (the temporary
-      # security chain in TemporarySecurityConfiguration requires them). Stage 5 replaces
-      # this whole mechanism with the X-API-Key filter (D5).
-      name: test-user
-      password: test-password
   flyway:
     enabled: true
   jpa:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+
+# Static API key for the integration tests (D5 / T5.1): every request that needs
+# authentication sends X-API-Key: test-api-key.
+auditbox:
+  security:
+    api-key: test-api-key
+
+# The OpenAPI test reads /v3/api-docs; re-enabled here because the base configuration
+# disables springdoc (D5: docs are dev-profile-only for humans).
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

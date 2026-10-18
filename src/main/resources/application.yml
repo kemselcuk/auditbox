@@ -3,6 +3,11 @@
 spring:
   application:
     name: auditbox
+  autoconfigure:
+    exclude:
+      # The static X-API-Key chain (D5) is the only authentication mechanism; Boot's default
+      # in-memory user and its generated-password log line are unused (T5.1).
+      - org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
   flyway:
     enabled: true
   jackson:
@@ -42,3 +47,20 @@ management:
     web:
       exposure:
         include: health,info
+
+# Static API key (D5): validated by the X-API-Key filter (ApiKeySecurityConfiguration),
+# bound from the API_KEY environment variable. Blank by default — a blank configured key
+# never matches, so a profile-less run denies every protected request (public: only
+# /actuator/health/**). The prod profile additionally fails fast at startup (ApiKeyProdRequirement).
+auditbox:
+  security:
+    api-key: ${API_KEY:}
+
+# OpenAPI/Swagger are disabled by default and enabled per profile (dev for humans,
+# test for the OpenAPI integration tests). Documentation requires the API key like any
+# other endpoint.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
