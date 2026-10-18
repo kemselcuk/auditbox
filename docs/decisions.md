@@ -263,7 +263,8 @@ decision → rationale/alternatives.
 - Rationale: simplest credible service-to-service auth; no sessions/CSRF; fail-fast prevents a
   blank-key production; constant-time comparison avoids timing leaks; docs stay off unless
   intentionally enabled.
-- Evidence: 182 tests (10 security, 5 matcher, 3 prod-requirement); live: 401 without/wrong key
+- Evidence: 187 tests at sign-off after the round-4 fixes (12 security, 6 matcher,
+  4 prod-requirement); the initial Stage 5 implementation had 182 (10/5/3). Live: 401 without/wrong key
   (Problem Details + `WWW-Authenticate`), 200 GET / 201 POST with the key, health public, other
   actuator 401, docs 401 without a key, unknown path 404 and PUT 405 with a key (not 401).
 - Review round 4 (2026-10-18, all findings closed): raw invalid percent-escapes in the query

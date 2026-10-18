@@ -43,9 +43,9 @@ class ApiKeyProdRequirementTest {
 	}
 
 	/**
-	 * Review round 4, F3: a whitespace-only key would pass a plain {@code isBlank} fails
-	 * only after stripping — it must abort startup exactly like missing/blank, since it
-	 * could itself never match a header value.
+	 * Review round 4, F3: a whitespace-only key would pass a plain {@code isBlank()} check
+	 * but can never match a header value once the configured side is stripped — it must
+	 * abort startup exactly like missing/blank.
 	 */
 	@Test
 	void prodStartupFailsWithWhitespaceOnlyApiKey() {

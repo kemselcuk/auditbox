@@ -38,9 +38,9 @@ class ApiKeyMatcherTest {
 
 	/**
 	 * Review round 4, F3: surrounding whitespace on the configured side is stripped before
-	 * comparison (the servlet container trims header names' handling such that an untrimmed
-	 * configured key could otherwise never match); the provided header value is compared
-	 * exactly as received.
+	 * comparison (the servlet container trims header values, so an untrimmed configured key
+	 * could otherwise never match); the provided header value is compared exactly as
+	 * received.
 	 */
 	@Test
 	void configuredKeyWithSurroundingWhitespaceMatchesTrimmedProvidedValue() {
