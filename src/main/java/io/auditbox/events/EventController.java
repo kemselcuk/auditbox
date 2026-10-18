@@ -74,17 +74,26 @@ public class EventController {
 	/**
 	 * Lists one page of events, newest first (T4.1, D2/D3). Query parameters arrive as raw
 	 * strings and are parsed and validated by {@link EventListQuery#parse}: any malformed
-	 * cursor, invalid date bound or out-of-range size becomes a 400 Problem Details
-	 * response (via {@link InvalidEventQueryException}) instead of a framework type-mismatch
-	 * error. The temporary basic-auth chain still applies (Stage 5 replaces it, D5).
+	 * cursor, invalid or out-of-range date bound, NUL character or out-of-range size
+	 * becomes a 400 Problem Details response (via {@link InvalidEventQueryException})
+	 * instead of a framework type-mismatch error. Blank {@code userId}/{@code eventType}/
+	 * {@code source} values are treated as absent filters (F6). The temporary basic-auth
+	 * chain still applies (Stage 5 replaces it, D5).
+	 *
+	 * <p>Repeated query parameters (review round 3, F5) are not explicitly rejected: the
+	 * servlet layer joins duplicate values with a comma, so {@code ?userId=a&userId=b}
+	 * behaves like {@code ?userId=a,b} — an exact-match filter that matches nothing in
+	 * practice. This is undocumented behavior of the servlet container, recorded here so
+	 * the contract is honest about it.
 	 */
 	@Operation(summary = "List events", description = """
 			Returns one page of events, newest first (occurredAt DESC, eventId DESC). Filters
-			combine conjunctively with exact match; occurredFrom and occurredTo are inclusive
-			bounds in strict ISO-8601 with an offset. Pagination is keyset-based: pass the
-			previous response's nextCursor verbatim as the cursor parameter; nextCursor is null
-			on the last page. A page request executes a single SELECT of at most size + 1 rows;
-			there is no total count (D3).""")
+			combine conjunctively with exact match (a blank filter value is treated as
+			absent); occurredFrom and occurredTo are inclusive bounds in strict ISO-8601 with
+			an offset, within the supported range 0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z.
+			Pagination is keyset-based: pass the previous response's nextCursor verbatim as the
+			cursor parameter; nextCursor is null on the last page. A page request executes a
+			single SELECT of at most size + 1 rows; there is no total count (D3).""")
 	@ApiResponses({
 			@ApiResponse(responseCode = "200", description = "Page of events (nextCursor null on the last page)",
 					content = @Content(mediaType = "application/json",

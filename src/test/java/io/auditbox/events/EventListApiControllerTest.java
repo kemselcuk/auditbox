@@ -7,6 +7,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -67,6 +68,13 @@ class EventListApiControllerTest {
 
 	/** Base instant of the seeding scenarios: whole minutes, so stored values are exact. */
 	private static final Instant BASE = Instant.parse("2026-10-18T00:00:00Z");
+
+	/**
+	 * Page-count guard for the walk loops (review round 3, F7): together with the item-cap
+	 * guard it makes a never-ending walk fail fast instead of hanging the test, without
+	 * tying the expectation to the near-exact page arithmetic the walk assertions check.
+	 */
+	private static final int MAX_WALK_PAGES = 100;
 
 	/**
 	 * Pinned PostgreSQL image; keep in sync with docker-compose.yml.
@@ -265,6 +273,8 @@ class EventListApiControllerTest {
 			// Guard against a walk that never terminates: the walk must stay within the
 			// seeded universe (and the test would fail on duplicates below anyway).
 			assertThat(walked.size()).as("walked items after page %d", pages).isLessThanOrEqualTo(45);
+			assertThat(pages).as("walked pages after page %d", pages)
+					.isLessThanOrEqualTo(MAX_WALK_PAGES);
 		}
 		while (cursor != null);
 
@@ -317,6 +327,8 @@ class EventListApiControllerTest {
 			pages++;
 			// Guard against a walk that never terminates (same as in the walk test).
 			assertThat(walked.size()).as("walked items after page %d", pages).isLessThanOrEqualTo(30);
+			assertThat(pages).as("walked pages after page %d", pages)
+					.isLessThanOrEqualTo(MAX_WALK_PAGES);
 		}
 
 		assertThat(pages).isEqualTo(3);
@@ -342,17 +354,29 @@ class EventListApiControllerTest {
 	static Stream<Arguments> invalidQueries() {
 		String jsonCursor = Base64.getUrlEncoder().withoutPadding()
 				.encodeToString("{\"foo\":\"bar\"}".getBytes(StandardCharsets.UTF_8));
+		String farFutureCursor = Base64.getUrlEncoder().withoutPadding()
+				.encodeToString(
+						"{\"occurredAt\":\"+294277-01-01T00:00:00Z\",\"eventId\":\"e\"}"
+								.getBytes(StandardCharsets.UTF_8));
 		return Stream.of(
 				Arguments.of("cursor that is not base64url", "?cursor=!!!not-base64!!!"),
 				Arguments.of("cursor that decodes to no JSON document", "?cursor=aGVsbG8"),
 				Arguments.of("cursor with unexpected fields", "?cursor=" + jsonCursor),
+				Arguments.of("cursor with an occurredAt outside the supported range",
+						"?cursor=" + farFutureCursor),
+				Arguments.of("blank cursor (a blank token, unlike blank filters, stays 400)",
+						"?cursor="),
 				Arguments.of("padded cursor", "?cursor=e30="),
 				Arguments.of("size zero", "?size=0"),
 				Arguments.of("size above the maximum", "?size=101"),
 				Arguments.of("size not a number", "?size=abc"),
 				Arguments.of("occurredFrom without an offset", "?occurredFrom=2026-10-18T12:00:00"),
 				Arguments.of("occurredFrom that is not a date", "?occurredFrom=18-10-2026"),
+				Arguments.of("occurredFrom outside the supported range",
+						"?occurredFrom=%2B999999999-12-31T23:59:59Z"),
 				Arguments.of("occurredTo without an offset", "?occurredTo=2026-10-18T12:00:00"),
+				Arguments.of("occurredTo outside the supported range",
+						"?occurredTo=-999999999-01-01T00:00:00Z"),
 				Arguments.of("occurredFrom after occurredTo",
 						"?occurredFrom=2026-10-18T12:00:01Z&occurredTo=2026-10-18T12:00:00Z"));
 	}
@@ -372,8 +396,162 @@ class EventListApiControllerTest {
 	}
 
 	// ---------------------------------------------------------------------
-	// T4.1 acceptance: exactly one SELECT per page request, no COUNT
+	// Review round 3: cursor worst case, range/NUL validation, F7 coverage
 	// ---------------------------------------------------------------------
+
+	@Test
+	void walkWithTheEmittedCursorForAnEscapeHeavyMaximumLengthEventId() throws Exception {
+		String user = unique("t4-escape-walk-user");
+		// A write-side-legal eventId at 128 characters, made purely of control characters:
+		// every one of them JSON-escapes to 6 characters inside the cursor, so this is the
+		// worst case the encode bound must not refuse (review round 3, F1).
+		String escapeHeavyId = "ctl-" + "\u0001".repeat(124);
+		Seeded older = seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+				BASE.minus(30, ChronoUnit.MINUTES)));
+		// The control characters must be JSON-escaped in transit; the service stores and
+		// returns the real characters.
+		String seedBody = "{\"eventId\":\"ctl-" + "\\u0001".repeat(124)
+				+ "\",\"userId\":\"" + user + "\",\"eventType\":\"payment.settled\","
+				+ "\"source\":\"core-banking\",\"occurredAt\":\"" + BASE.minus(10, ChronoUnit.MINUTES)
+				+ "\"}";
+		HttpResponse<String> seeded = post(seedBody);
+		assertThat(seeded.statusCode()).as("seeding the escape-heavy event").isEqualTo(201);
+		Seeded escapeHeavy = new Seeded(escapeHeavyId, user, "payment.settled", "core-banking",
+				BASE.minus(10, ChronoUnit.MINUTES));
+
+		Page firstPage = page(get("/api/v1/events?userId=" + user + "&size=1"));
+		assertThat(firstPage.items()).extracting(Item::eventId).containsExactly(escapeHeavy.eventId());
+		assertThat(firstPage.nextCursor()).as("cursor emitted for the escape-heavy id").isNotBlank();
+
+		// The API must accept exactly the cursor it emitted: page two returns the older event.
+		HttpResponse<String> secondResponse = get("/api/v1/events?userId=" + user
+				+ "&size=1&cursor=" + firstPage.nextCursor());
+		assertThat(secondResponse.statusCode())
+				.as("the emitted nextCursor must decode despite JSON escaping")
+				.isEqualTo(200);
+		Page secondPage = page(secondResponse);
+		assertThat(secondPage.items()).extracting(Item::eventId).containsExactly(older.eventId());
+		assertThat(secondPage.nextCursor()).isNull();
+	}
+
+	@Test
+	void occurredBoundsOutsideTheSupportedRangeAre400NamingTheParameter() throws Exception {
+		// A parseable-but-unsupported year (integers up to +/-999999999 parse fine as
+		// OffsetDateTime) must be a named-parameter 400, not a later 500 (review round 3, F4).
+		assert400DetailNamesParameter(
+				get("/api/v1/events?occurredFrom=%2B999999999-12-31T23:59:59Z"), "occurredFrom");
+		assert400DetailNamesParameter(
+				get("/api/v1/events?occurredTo=-999999999-01-01T00:00:00Z"), "occurredTo");
+	}
+
+	@Test
+	void cursorOccurredAtOutsideTheSupportedRangeIs400NamingTheParameter() throws Exception {
+		assert400DetailNamesParameter(
+				get("/api/v1/events?cursor=" + cursorOf(
+						"{\"occurredAt\":\"+294277-01-01T00:00:00Z\",\"eventId\":\"e\"}")),
+				"occurredAt");
+	}
+
+	@Test
+	void nulCharacterInFilterValuesIs400NamingTheParameter() throws Exception {
+		assert400DetailNamesParameter(get("/api/v1/events?userId=user%00"), "userId");
+		assert400DetailNamesParameter(get("/api/v1/events?eventType=payment%00x"), "eventType");
+	}
+
+	@Test
+	void maximumPageSizeOf100IsAccepted() throws Exception {
+		String user = unique("t4-maxsize-user");
+		for (int i = 0; i < 3; i++) {
+			seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+					BASE.minus(i, ChronoUnit.MINUTES)));
+		}
+
+		Page result = page(get("/api/v1/events?userId=" + user + "&size=100"));
+
+		assertThat(result.items()).hasSize(3);
+		assertThat(result.nextCursor()).isNull();
+	}
+
+	@Test
+	void aPageLengthExactlyEqualToSizeEndsTheWalk() throws Exception {
+		String user = unique("t4-fullpage-user");
+		for (int i = 0; i < 4; i++) {
+			seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+					BASE.minus(i, ChronoUnit.MINUTES)));
+		}
+
+		// Exactly `size` events: the page is full by construction, but no (size + 1)-th row
+		// exists, so the walk must end here with nextCursor null (review round 3, F7).
+		Page result = page(get("/api/v1/events?userId=" + user + "&size=4"));
+
+		assertThat(result.items()).hasSize(4);
+		assertThat(result.nextCursor()).isNull();
+	}
+
+	@Test
+	void aTieGroupEndingOnTheLastPageHasNullNextCursor() throws Exception {
+		String user = unique("t4-tailtie-user");
+		String idPrefix = "t4tailtie-" + UUID.randomUUID();
+		Seeded uniqueEarlier = seed(new Seeded(idPrefix + "-000", user, "payment.settled",
+				"core-banking", BASE.minus(10, ChronoUnit.MINUTES)));
+		Seeded tieFirst = seed(new Seeded(idPrefix + "-001", user, "payment.settled",
+				"core-banking", BASE.minus(5, ChronoUnit.MINUTES)));
+		Seeded tieLast = seed(new Seeded(idPrefix + "-002", user, "payment.settled",
+				"core-banking", BASE.minus(5, ChronoUnit.MINUTES)));
+
+		// The page ends exactly on a tie group: the keyset position would be ambiguous, but
+		// with no (size + 1)-th row it must simply be the last page (review round 3, F7).
+		Page result = page(get("/api/v1/events?userId=" + user + "&size=3"));
+
+		assertThat(result.items()).extracting(Item::eventId)
+				.containsExactly(tieLast.eventId(), tieFirst.eventId(), uniqueEarlier.eventId());
+		assertThat(result.nextCursor()).isNull();
+	}
+
+	@Test
+	void aCursorAtANonExistentPositionContinuesCorrectly() throws Exception {
+		String user = unique("t4-gapcursor-user");
+		Seeded oldest = seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+				BASE.minus(30, ChronoUnit.MINUTES)));
+		Seeded middle = seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+				BASE.minus(20, ChronoUnit.MINUTES)));
+		seed(new Seeded(uniqueEventId(), user, "payment.settled", "core-banking",
+				BASE.minus(10, ChronoUnit.MINUTES)));
+
+		// A hand-made position exactly between two stored timestamps (no event at
+		// BASE - 15min): the keyset predicate selects everything strictly before it.
+		String betweenTimestamps = EventCursor.encode(
+				OffsetDateTime.ofInstant(BASE.minus(15, ChronoUnit.MINUTES), ZoneOffset.UTC), "zzz");
+
+		Page result = page(get("/api/v1/events?userId=" + user + "&size=20&cursor=" + betweenTimestamps));
+
+		assertThat(result.items()).extracting(Item::eventId)
+				.containsExactly(middle.eventId(), oldest.eventId());
+		assertThat(result.nextCursor()).isNull();
+	}
+
+	@Test
+	void blankFilterValuesAreTreatedAsAbsent() throws Exception {
+		String user = unique("t4-blank-user");
+		Seeded onlyUserEvent = seed(new Seeded(uniqueEventId(), user, "payment.settled",
+				"core-banking", BASE.minus(30, ChronoUnit.MINUTES)));
+		String otherUser = unique("t4-blank-user");
+		seed(new Seeded(uniqueEventId(), otherUser, "payment.settled", "core-banking",
+				BASE.minus(20, ChronoUnit.MINUTES)));
+
+		// Blank values on every filter parameter are the same query as no parameters at all
+		// (review round 3, F6). The database is shared by scenarios, so compare the two
+		// requests against each other instead of against a fixed item universe.
+		List<String> blankValues = page(get("/api/v1/events?userId=&eventType=&source=&size="))
+				.items().stream().map(Item::eventId).toList();
+		List<String> absentFilters = page(get("/api/v1/events"))
+				.items().stream().map(Item::eventId).toList();
+
+		assertThat(blankValues).isEqualTo(absentFilters);
+		// The user's own event is in the result even with all filter parameters present but
+		// blank: a blank value never narrowed anything to the empty string.
+		assertThat(blankValues).contains(onlyUserEvent.eventId());
+	}
 
 	@Test
 	void aPageRequestIssuesExactlyOneSelectWithoutCount() throws Exception {
@@ -486,5 +664,27 @@ class EventListApiControllerTest {
 
 	private static String uniqueEventId() {
 		return "t4-" + UUID.randomUUID();
+	}
+
+	/** Base64url-without-padding encoding of a raw cursor JSON document, for negative tests. */
+	private static String cursorOf(String json) {
+		return Base64.getUrlEncoder().withoutPadding()
+				.encodeToString(json.getBytes(StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * 400 Problem Details whose detail names the offending parameter (review round 3, F4):
+	 * GET parameter errors must never surface the POST-oriented "Event content could not be
+	 * stored" detail.
+	 */
+	private static void assert400DetailNamesParameter(HttpResponse<String> response, String parameter)
+			throws Exception {
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(problem.get("detail").stringValue()).contains(parameter);
+		assertThat(problem.get("detail").stringValue()).doesNotContain("Event content could not be stored");
 	}
 }

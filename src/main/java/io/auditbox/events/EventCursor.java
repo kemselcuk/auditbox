@@ -1,6 +1,7 @@
 package io.auditbox.events;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
@@ -8,6 +9,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -15,17 +17,23 @@ import tools.jackson.databind.json.JsonMapper;
  * The opaque continuation cursor of GET /api/v1/events (plan task T4.1, decision D3).
  *
  * <p>The cursor content is the keyset position of the last item of the previous page: its
- * {@code occurredAt} (stored in UTC at microsecond precision, D10/D12) and its
- * {@code eventId}. Both are serialized as a small JSON document and encoded with URL-safe
- * Base64 without padding. JSON (via the Jackson 3 mapper already on the classpath) keeps
- * eventIds containing quotes or control characters safe; {@code Base64.getUrlEncoder()
- * .withoutPadding()} yields exactly the URL-safe, padding-free alphabet the contract
- * requires.
+ * {@code occurredAt} and its {@code eventId}. Both are serialized as a small JSON document
+ * and encoded with URL-safe Base64 without padding. JSON (via the Jackson 3 mapper already
+ * on the classpath) keeps eventIds containing quotes or control characters safe;
+ * {@code Base64.getUrlEncoder().withoutPadding()} yields exactly the URL-safe, padding-free
+ * alphabet the contract requires.
+ *
+ * <p>The encoded {@code occurredAt} shape is the {@code OffsetDateTime#toString} form of the
+ * microsecond-truncated UTC instant (D10/D12): a standard ISO-8601 UTC instant with
+ * <em>variable</em> precision — the fractional-seconds part is omitted when zero and otherwise
+ * trimmed of trailing zeros, running up to six (microsecond) digits. It is deliberately not a
+ * fixed-width ".SSSSSS" string; decode parses whatever precision the token carries.
  *
  * <p>The document shape is deliberately strict on decode — exactly the two fields, a
- * parseable date-time, a non-blank eventId — because the cursor is an opaque token clients
- * must echo verbatim: anything else is malformed content and surfaces as 400 via
- * {@link InvalidEventQueryException} (T4.1).
+ * parseable date-time within the supported range (see {@link EventListQuery}), a non-blank,
+ * NUL-free eventId with at most the write-side length — because the cursor is an opaque
+ * token clients must echo verbatim: anything else is malformed content and surfaces as 400
+ * via {@link InvalidEventQueryException} (T4.1).
  */
 final class EventCursor {
 
@@ -37,16 +45,33 @@ final class EventCursor {
 	}
 
 	/**
-	 * Cursor length bound. A genuine cursor is about 120 characters; the generous cap keeps
-	 * the decode cost bounded (the write-side eventId bound is 128 characters, D12) and
-	 * rejects oversized garbage before any parsing.
+	 * Cursor length bound. The pre-parse bound must exceed the length of any cursor
+	 * {@link #encode} can emit for a write-side-legal event (the write-side eventId bound
+	 * is 128 characters, D12), so the API never emits a nextCursor it would refuse itself.
+	 * Worst case JSON payload: a 128-character eventId of nothing but control characters,
+	 * each of which JSON-escapes to the 6-character \-prefixed form (backslash + u00XX),
+	 * i.e. 128 &times; 6 = 768
+	 * characters; plus an {@code occurredAt} of up to ~30
+	 * characters (microsecond UTC instant; a 6-digit year renders as {@code +294276-...})
+	 * plus the ~30 bytes of fixed JSON overhead ({@code {"occurredAt":"","eventId":""}}):
+	 * ~828 JSON bytes. URL-safe Base64 expands this to {@code ceil(828 / 3) * 4 = 1104}
+	 * characters. 1200 leaves the generous margin above that bound while still rejecting
+	 * oversized garbage before any parsing (review round 3, F1).
 	 */
-	private static final int MAX_CURSOR_LENGTH = 512;
+	private static final int MAX_CURSOR_LENGTH = 1200;
 
 	/** The event id length bound of the write side (D12) — a cursor position cannot exceed it. */
 	private static final int MAX_EVENT_ID_LENGTH = 128;
 
-	private static final JsonMapper JSON = JsonMapper.builder().build();
+	/**
+	 * The cursor JSON mapper. Strict duplicate-key detection (review round 3, F3) makes a
+	 * JSON document with two {@code occurredAt} (or {@code eventId}) keys a parse failure
+	 * instead of a last-one-wins lookup: the duplicate is ambiguous content and must be
+	 * rejected as malformed, not silently narrowed.
+	 */
+	private static final JsonMapper JSON = JsonMapper.builder()
+			.enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+			.build();
 
 	private EventCursor() {
 	}
@@ -65,8 +90,9 @@ final class EventCursor {
 	/**
 	 * Decodes a client-supplied cursor into its keyset position. Any deviation from the
 	 * encoded shape — characters outside the URL-safe alphabet, padding, non-JSON content,
-	 * unexpected fields, an unparseable {@code occurredAt}, a blank or oversized
-	 * {@code eventId} — raises {@link InvalidEventQueryException} (400, T4.1).
+	 * duplicate JSON keys, unexpected fields, an unparseable or out-of-range
+	 * {@code occurredAt}, a blank, oversized or NUL-bearing {@code eventId} — raises
+	 * {@link InvalidEventQueryException} (400, T4.1, review round 3 F4).
 	 */
 	static Position decode(String cursor) {
 		if (cursor == null || cursor.isBlank()) {
@@ -107,9 +133,24 @@ final class EventCursor {
 		catch (DateTimeParseException e) {
 			throw new InvalidEventQueryException("cursor is malformed (occurredAt is not an ISO-8601 date-time)");
 		}
+		// Same supported range as the occurredFrom/occurredTo bounds (review round 3, F4):
+		// a crafted position outside it could never match a stored row and must not slip
+		// past validation.
+		Instant instant = occurredAt.toInstant();
+		if (instant.isBefore(EventListQuery.MIN_SUPPORTED_INSTANT)
+				|| instant.isAfter(EventListQuery.MAX_SUPPORTED_INSTANT)) {
+			throw new InvalidEventQueryException("cursor is malformed (occurredAt is outside the supported range "
+					+ EventListQuery.SUPPORTED_RANGE_TEXT + ")");
+		}
 		String eventId = node.get("eventId").asString();
 		if (eventId.isBlank() || eventId.length() > MAX_EVENT_ID_LENGTH) {
 			throw new InvalidEventQueryException("cursor is malformed (eventId must be 1..128 characters)");
+		}
+		// A NUL character can never match a stored event_id (PostgreSQL text rejects it at
+		// the column level), so the position is unusable content: reject it here (F4) with
+		// a GET-oriented message instead of surfacing a data-exception error from insert.
+		if (eventId.indexOf('\u0000') >= 0) {
+			throw new InvalidEventQueryException("cursor is malformed (eventId must not contain NUL characters)");
 		}
 		return new Position(occurredAt, eventId);
 	}

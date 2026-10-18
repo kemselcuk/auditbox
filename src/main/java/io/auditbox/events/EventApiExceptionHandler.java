@@ -28,8 +28,11 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  *       for unreadable or malformed bodies (broken JSON, wrong types, oversized number
  *       literals),</li>
  *   <li>400 for invalid list query parameters (T4.1) via {@link InvalidEventQueryException}:
- *       a malformed cursor, a non-ISO-8601 occurredFrom/occurredTo, an inverted date range
- *       or a page size outside 1..100 — the violation is the detail,</li>
+ *       a malformed cursor, a non-ISO-8601 or out-of-range occurredFrom/occurredTo, an
+ *       inverted date range, a NUL character in a filter or cursor value, or a page size
+ *       outside 1..100 — the violation is the detail, and the messages name the offending
+ *       parameter, never the POST-oriented "Event content could not be stored" (review
+ *       round 3, F4),</li>
  *   <li>409 for a duplicate eventId with different content, carrying the stored record in the
  *       {@code existingEvent} extension in exactly the shape of a success response (D4),</li>
  *   <li>400 for request content PostgreSQL rejects as a "data exception" (SQLState class 22,
@@ -89,10 +92,11 @@ public class EventApiExceptionHandler extends ResponseEntityExceptionHandler {
 	}
 
 	/**
-	 * Invalid list query parameters (T4.1): a malformed cursor, a non-ISO-8601
-	 * occurredFrom/occurredTo, an inverted date range or a page size outside 1..100 —
-	 * 400 Problem Details with the violation as the detail. No {@code errors} extension:
-	 * that shape is reserved for the Bean Validation failures of a request body.
+	 * Invalid list query parameters (T4.1): a malformed cursor, a non-ISO-8601 or
+	 * out-of-range occurredFrom/occurredTo, an inverted date range, a NUL character in a
+	 * filter or cursor value or a page size outside 1..100 — 400 Problem Details with the
+	 * violation as the detail. No {@code errors} extension: that shape is reserved for the
+	 * Bean Validation failures of a request body.
 	 */
 	@ExceptionHandler(InvalidEventQueryException.class)
 	public ResponseEntity<Object> handleInvalidEventQuery(InvalidEventQueryException ex) {
@@ -121,7 +125,9 @@ public class EventApiExceptionHandler extends ResponseEntityExceptionHandler {
 	 * chain carries SQLState class 22 the request data itself is the problem: 400 with a
 	 * generic detail. Any other integrity cause keeps the generic 500. The idempotency
 	 * duplicate case (23505, D4) is resolved inside {@link EventService} and never reaches
-	 * this handler.
+	 * this handler. The read path validates its query parameters up front (review round 3,
+	 * F4), so malformed GET filters or cursors are answered by
+	 * {@link #handleInvalidEventQuery} and can never surface this writer-oriented detail.
 	 */
 	@ExceptionHandler(DataIntegrityViolationException.class)
 	public ResponseEntity<Object> handleDataIntegrityViolation(DataIntegrityViolationException ex) {

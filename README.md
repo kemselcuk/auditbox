@@ -82,8 +82,59 @@ until Stage 5 replaces it with X-API-Key authentication.
 
 ## API
 
-Placeholder — filled in Stages 3–5 (`POST /api/v1/events`, `GET /api/v1/events`, X-API-Key auth,
-OpenAPI/Swagger).
+Both endpoints live under `/api/v1/events`. Machine-readable OpenAPI is served at
+`/v3/api-docs` (Swagger UI in the dev profile). **Authentication today is the temporary
+HTTP basic auth** of the `local`/`test` profiles (Stage 5 replaces it with a static
+`X-API-Key` header — the examples below use the test-profile credentials; for a `local`
+run, pass the user Spring Boot generates and logs at startup, or set
+`SPRING_SECURITY_USER_NAME`/`SPRING_SECURITY_USER_PASSWORD`).
+
+### Record an event
+
+`POST /api/v1/events` — idempotent per `eventId` (D4):
+
+- Body: JSON with `eventId` (client-generated, max 128 chars), `userId`, `eventType`,
+  `source`, `occurredAt` (strict ISO-8601 with offset), optional `metadata` (small JSON).
+- `201 Created` stores a new event; `200 OK` is an idempotent retry (same `eventId` with
+  identical content — body is the stored record); `409 Conflict` is the same `eventId` with
+  different content (stored record in the `existingEvent` extension); `400 Bad Request`
+  covers validation failures (Problem Details, `errors` extension). `receivedAt` is set by
+  the server.
+
+```bash
+curl -sS -u test-user:test-password http://localhost:8080/api/v1/events \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+       "eventType":"payment.settled","source":"core-banking",
+       "occurredAt":"2026-10-18T12:00:00Z"}'
+```
+
+```text
+{"id":1,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+ "eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z",
+ "metadata":null,"receivedAt":"2026-10-18T12:00:00.123456Z"}
+```
+
+### List events
+
+`GET /api/v1/events` — filters and stable keyset pagination (D3):
+
+- Filters (optional, exact match): `userId`, `eventType`, `source`; a blank value counts as
+  no filter. `occurredFrom`/`occurredTo` are inclusive bounds, strict ISO-8601 with offset.
+- Pagination: newest first (`occurredAt DESC, eventId DESC`). Echo the previous response's
+  `nextCursor` verbatim as `cursor`; `nextCursor` is only set when more results exist and is
+  null on the last page. `size` is 1..100 (default 20). There is deliberately no total
+  count; a page request is a single SELECT of at most `size + 1` rows.
+- Errors: `400 Bad Request` Problem Details for a malformed cursor, a non-ISO-8601 or
+  out-of-range bound, an inverted range or an out-of-range `size` — the detail names the
+  offending parameter.
+
+```bash
+curl -sS -u test-user:test-password \
+  'http://localhost:8080/api/v1/events?userId=user-42&size=10'
+curl -sS -u test-user:test-password \
+  'http://localhost:8080/api/v1/events?cursor=<nextCursor-from-the-previous-page>'
+```
 
 ## Demo
 
