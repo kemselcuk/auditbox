@@ -69,4 +69,20 @@ decision → rationale/alternatives.
   Docker 29.8.1 + Compose v5.5.1 running; `JAVA_HOME` unset.
 - Rationale: Target the deterministic default JDK and stay independent of an unset `JAVA_HOME`;
   `release=21` builds identically under both JDKs.
-- Status: partially confirmed; finalized with T1.1/T1.2 evidence.
+- Status: finalized with T1.1/T1.2 evidence (2026-10-18):
+  - Spring Boot **4.1.1** (`spring-boot-starter-parent`, latest 4.1.x GA patch on Maven Central).
+  - Maven wrapper 3.3.4 pinning Apache Maven **3.9.11**; `./mvnw -version` resolves Temurin
+    21.0.8 from PATH when `JAVA_HOME` is unset; `maven.compiler.release=21`.
+  - Flyway **12.4.0** via the new `spring-boot-starter-flyway` plus `flyway-database-postgresql`
+    (both version-managed by Boot).
+  - Testcontainers **2.0.5** (`testcontainers-postgresql`, `testcontainers-junit-jupiter`,
+    version-managed by Boot).
+  - springdoc-openapi **3.1.1** (`springdoc-openapi-starter-webmvc-ui`; the v3 line is the one
+    that supports Spring Boot 4, per springdoc.org).
+  - PostgreSQL image **`postgres:18-alpine`** (PostgreSQL 18.6), volume mounted at
+    `/var/lib/postgresql` (mount point changed in the v18 image; see docker-compose.yml).
+  - Hibernate `ddl-auto: validate` chosen: a no-op with zero entities, verified against the
+    Testcontainers database; Flyway owns the schema from Stage 2 on.
+  - Spring Boot 4 renames applied vs the 3.x names: `spring-boot-starter-web` →
+    `spring-boot-starter-webmvc`, dedicated `spring-boot-starter-flyway`, Testcontainers 2.x
+    artifact names (`testcontainers-postgresql`, `testcontainers-junit-jupiter`).
