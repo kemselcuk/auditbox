@@ -124,14 +124,17 @@ decision → rationale/alternatives.
   validation by `@ValidMetadata` on two forms, both computed in `long` from
   `BigDecimal.precision()/scale()` in O(1) so huge-exponent literals are rejected before any
   allocation: the canonical (trailing-zeros-stripped) form at 1000 integer + 1000 fractional
-  digits, and the stored (unstripped, literal-scale) form at 4000 total plain digits. The read
-  side is aligned at 4096 characters (`max-number-length` for MVC and for Hibernate's
-  `FormatMapper`), above the 4002 characters the stored-form bound allows, so every accepted
-  number survives the jsonb read-back and Hibernate's save-time deep copy; `long` arithmetic
-  prevents integer wrap for exponents such as `1e2147483647`. The validator reuses the hasher's
-  `canonicalNumber()`, so validation and hashing cannot drift. BigDecimal values are rendered as
-  plain decimals (no exponent notation) on both mappers; JSON object key order is not significant
-  and may be normalized by jsonb (review round 2 F4).
+  digits, and the stored (unstripped, literal-scale) form at 4000 total plain digits. Integer
+  digits are checked on the unstripped instance before `stripTrailingZeros()`, so values like
+  `100e2147483647` cannot overflow the strip and surface as a 500 (re-review 2c F1). The read
+  side is aligned at 4096 digits (`max-number-length` for MVC and for Hibernate's `FormatMapper`;
+  the limit counts digits), above the 4001 digits (4003 characters including sign, decimal point
+  and leading zero) the stored-form bound allows, so every accepted number survives the jsonb
+  read-back and Hibernate's save-time deep copy; `long` arithmetic prevents integer wrap for
+  exponents such as `1e2147483647`. The validator reuses the hasher's `canonicalNumber()`, so
+  validation and hashing cannot drift. BigDecimal values are rendered as plain decimals (no
+  exponent notation) on both mappers; JSON object key order is not significant and may be
+  normalized by jsonb (review round 2 F4).
 - Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
   Rejected: hashing raw request bytes (formatting changes would break idempotency).
 

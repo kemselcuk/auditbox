@@ -14,7 +14,7 @@ schema, and canonical hash are in place — see the status line below.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
-Status: Stage 2 (schema and canonical content hash) — roadmap in [docs/plan.md](docs/plan.md).
+Status: Stage 3 (event ingestion API) — roadmap in [docs/plan.md](docs/plan.md).
 
 ## Prerequisites
 
@@ -91,9 +91,10 @@ Placeholder — filled in Stage 6 (sample-event client, single-page web demo, de
 
 ## Testing
 
-Placeholder — filled in Stage 7 with the test/evidence matrix. Today, `./mvnw verify` runs 14
-tests: the health integration test (Testcontainers PostgreSQL `postgres:18-alpine`), 8
-canonical-content-hash unit tests, and 5 schema-migration assertions.
+Placeholder — filled in Stage 7 with the test/evidence matrix. Today, `./mvnw verify` runs the
+full unit and integration suite against a real PostgreSQL (Testcontainers,
+`postgres:18-alpine`), including the write API, the idempotency/conflict paths and the
+concurrency scenarios.
 
 ## Decisions
 
