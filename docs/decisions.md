@@ -114,6 +114,12 @@ decision → rationale/alternatives.
   tests now run against both the default (DoubleNode) mapper and the `USE_BIG_DECIMAL_FOR_FLOATS`
   (DecimalNode) mapper; exact high-precision behavior is proven only on the latter, matching the
   known limit above.
+- Stage 3 implementation note (2026-10-18): the MVC mapper reads JSON floats as `BigDecimal` via
+  `spring.jackson.deserialization.use-big-decimal-for-floats: true`; Hibernate's `jsonb` read path
+  uses an application-provided Jackson 3 `FormatMapper` with the same feature
+  (`JsonFormatMapperConfiguration`), because Hibernate's default Jackson 3 mapper reads JSON
+  numbers as double nodes. End-to-end precision is proven by `EventApiControllerTest`
+  (`1.00000000000000000001` stored and returned exactly; posting `1` for the same eventId → 409).
 - Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
   Rejected: hashing raw request bytes (formatting changes would break idempotency).
 
@@ -132,3 +138,27 @@ decision → rationale/alternatives.
   is the service receipt time returned by the API (DB clock at insert; a future importer may
   override it to preserve an original receipt time), while `created_at` is row-insert bookkeeping.
   They coincide today.
+
+## D12 — Write API contract and idempotency mechanics (T3.1/T3.2)
+
+- Decision: `POST /api/v1/events` → 201 (new), 200 (identical retry with the stored record), 409
+  (same eventId, different content; RFC 9457 Problem Details with an `existingEvent` extension in
+  the success shape). Success bodies expose `id, eventId, userId, eventType, source, occurredAt,
+  metadata, receivedAt`; the internal `content_hash` is never exposed. `occurredAt` is normalized
+  to UTC and truncated to microseconds before storage, so the 201 response and later re-reads
+  render identically.
+- Errors: 400 Problem Details with a sorted `errors` list (field, message) for Bean Validation and
+  unreadable bodies (malformed JSON, oversized number literals → 400, never 500); 409 as above;
+  unexpected errors → generic 500 (logged, no internals in the body). Framework 4xx keep the same
+  Problem Details shape through `ResponseEntityExceptionHandler`.
+- Validation: `eventId`/`userId`/`eventType`/`source` not blank, max 128; `occurredAt` strict
+  ISO-8601 with offset; `metadata` any JSON value; absent ≡ null.
+- Mechanics: hash before insert; insert in a dedicated `REQUIRES_NEW` transaction
+  (`EventInsertService` via `TransactionTemplate`) so a unique violation cannot poison an outer
+  transaction; on SQLState 23505 (found in the cause chain — Spring ORM 7 translates it to a
+  generic `DataIntegrityViolationException`, not `DuplicateKeyException`) re-read the committed
+  winner and compare hashes.
+- Interim auth: a temporary basic-auth chain is active only in the `test` and `local` profiles;
+  a profile-less (`prod`-like) run keeps Boot's default until Stage 5 adds the X-API-Key chain.
+- Rationale: first-writer-wins with explicit conflict signalling, no silent overwrite; the
+  separate insert transaction is the standard fix for the PostgreSQL abort/rollback-only pitfall.
