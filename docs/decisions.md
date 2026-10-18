@@ -236,3 +236,33 @@ decision → rationale/alternatives.
   traversed a 3-row equal-timestamp tie group without duplicates; write-side range enforcement
   rejects `+10000-...` with an occurredAt field error while the min/max boundaries store and
   replay.
+
+## D14 — Static X-API-Key authentication (T5.1)
+
+- Decision: one stateless Spring Security chain; the only authentication mechanism is the
+  `X-API-Key` header validated by `ApiKeyAuthenticationFilter`. The key is
+  `auditbox.security.api-key`, bound from `API_KEY`: `local`/`dev` default to `local-dev-key`,
+  `test` to `test-api-key`, and `prod` fails fast at startup when the key is missing or blank
+  (`ApiKeyProdRequirement`); a blank configured key matches nothing (deny-all).
+- Constant-time comparison: SHA-256 both values, `MessageDigest.isEqual`; null/blank never
+  matches; neither the key nor the header value is logged or stored in the security context
+  (the principal is a static client name).
+- Responses: missing/wrong key → 401 RFC 9457 Problem Details (`application/problem+json`,
+  title Unauthorized, detail naming `X-API-Key`) plus `WWW-Authenticate: X-API-Key`.
+  `/actuator/health/**` is public; everything else requires the key (events, other actuator
+  endpoints, docs when enabled). `DispatcherType.ERROR` dispatches are permitted so an
+  authenticated 404/405 is not masked as 401 by the error page; the original request still
+  passes the key check.
+- Swagger/OpenAPI: disabled by default; enabled in the `dev` profile for humans (run
+  `local,dev`) and in `test` for the OpenAPI tests; docs stay key-protected. The OpenAPI
+  document declares an `ApiKeyAuth` apiKey scheme (header `X-API-Key`) with a global security
+  requirement.
+- Cleanup: the Stage 3 temporary basic-auth chain and `spring.security.user.*` are deleted;
+  Boot's unused default in-memory user (`UserDetailsServiceAutoConfiguration`) is excluded so no
+  generated password is logged and no unused authentication path exists.
+- Rationale: simplest credible service-to-service auth; no sessions/CSRF; fail-fast prevents a
+  blank-key production; constant-time comparison avoids timing leaks; docs stay off unless
+  intentionally enabled.
+- Evidence: 182 tests (10 security, 5 matcher, 3 prod-requirement); live: 401 without/wrong key
+  (Problem Details + `WWW-Authenticate`), 200 GET / 201 POST with the key, health public, other
+  actuator 401, docs 401 without a key, unknown path 404 and PUT 405 with a key (not 401).
