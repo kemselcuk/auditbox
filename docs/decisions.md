@@ -375,4 +375,6 @@ decision → rationale/alternatives.
   `DemoPageE2ETest` (5 tests, Testcontainers
   PostgreSQL, real Chromium, trace-on-failure under `target/playwright-traces`); manually
   triggered `.github/workflows/e2e.yml`. Default `./mvnw -B verify` re-verified: 227 tests,
-  BUILD SUCCESS; `./mvnw -B -Pe2e verify`: 5 tests, BUILD SUCCESS.
+  BUILD SUCCESS; `./mvnw -B -Pe2e verify`: 5 tests, BUILD SUCCESS. The manual workflow has
+  run green on GitHub for `624edfe` (102 s, `surefire-reports` artefact; no traces because no
+  test failed).

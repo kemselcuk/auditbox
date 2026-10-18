@@ -568,7 +568,8 @@ tests record a Playwright trace under `target/playwright-traces/`.
 CI runs the suite as a **manually triggered workflow only**
 (`.github/workflows/e2e.yml`, `workflow_dispatch` in the Actions tab, ubuntu-latest,
 Temurin 21) and uploads the traces and Surefire reports as artefacts; the push/PR
-pipeline is unchanged.
+pipeline is unchanged. The workflow has run green for the commit that added the suite
+(5/5 tests, surefire-reports artefact; no trace, because nothing failed).
 
 The suite (JUnit 5; the integration classes use Testcontainers against the pinned
 `postgres:18-alpine` image and real HTTP on a random port, the rest are pure unit tests) covers,
