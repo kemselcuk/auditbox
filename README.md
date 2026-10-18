@@ -476,8 +476,8 @@ it. Short summary:
   count; offset pagination rejected.
 - **D4** idempotency: unique `event_id` + canonical content hash; identical retry → 200 with
   the stored record, different content → 409; races resolved from the unique violation.
-- **D5** auth: static `X-API-Key`, constant-time check, health public, prod fail-fast,
-  Swagger dev-profile only.
+- **D5** auth: static `X-API-Key`, constant-time check, health and the static demo page public,
+  prod fail-fast, Swagger dev-profile only.
 - **D6–D8** documentation structure (few central docs, no per-task files), repository language
   (English), demo scope (no video).
 - **D9** stack baseline: Java 21 LTS, Spring Boot 4.1.1, Maven wrapper, Flyway 12.4,

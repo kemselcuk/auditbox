@@ -249,7 +249,8 @@ decision → rationale/alternatives.
   (the principal is a static client name).
 - Responses: missing/wrong key → 401 RFC 9457 Problem Details (`application/problem+json`,
   title Unauthorized, detail naming `X-API-Key`) plus `WWW-Authenticate: X-API-Key`.
-  `/actuator/health/**` is public; everything else requires the key (events, other actuator
+  `/actuator/health/**` and the static demo page (`/demo/**`, T6.2/D15) are public; everything else
+  requires the key (events, other actuator
   endpoints, docs when enabled). `DispatcherType.ERROR` dispatches are permitted so an
   authenticated 404/405 is not masked as 401 by the error page; the original request still
   passes the key check.

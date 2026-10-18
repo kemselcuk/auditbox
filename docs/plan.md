@@ -80,8 +80,8 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T8.1 | Read-only full-diff and docs review round (DeepSeek V4.1 Flash) | Findings resolved or explicitly deferred with rationale | in progress |
-| T8.2 | Final acceptance pass + cost report | Acceptance checklist with evidence; owner gives final acceptance | in progress |
+| T8.1 | Read-only full-diff and docs review round (DeepSeek V4.1 Flash) | Findings resolved or explicitly deferred with rationale | done |
+| T8.2 | Final acceptance pass + cost report | Acceptance checklist with evidence; owner gives final acceptance | done |
 
 ## Acceptance evidence matrix
 
@@ -186,7 +186,7 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | Idempotent ingestion per `eventId` | T3.2 tests (200/409 semantics); `scripts/dedupe-demo.sh` end-to-end transcript (README) | test + live |
 | Concurrent duplicates leave exactly one row | `EventApiControllerTest.concurrentIdenticalRequestsProduceExactlyOne201AndExactlyOneRow`; dedupe script scenario 1 (`1x201 + 9x200 … rows: 1`) | test + live |
 | Stable keyset pagination | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates`, `cursorWalkIgnoresAnEventInsertedBetweenPages`, one-SELECT/no-COUNT + LIMIT tests | test |
-| Simple service auth (D5) | `ApiKeySecurityTest` (12), `ApiKeyMatcherTest` (6), `ApiKeyProdRequirementTest` (4) | test |
+| Simple service auth (D5) | `ApiKeySecurityTest` (13), `ApiKeyMatcherTest` (6), `ApiKeyProdRequirementTest` (4) | test |
 | OpenAPI per contract | `openApiDocsDescribeTheEventsPath`, `openApiDocsDescribeTheListEndpoint`, `openApiDocumentDeclaresApiKeySecurityScheme` | test |
 | Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 211 tests (T7.2 sign-off); runs require only Docker (Testcontainers), not a pre-started database | test |
 | Demo | three demo paths + README transcripts/screenshot (stage 6 rows above) | test + live |
@@ -273,3 +273,12 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
   row; F6–F9 nits (DB_PORT in step 1, wording, evidence labels). All closed: README/D14/matrix
   corrections, a malformed-JSON test and a duplicate-header test (211 tests). **Stage 7 signed
   off.**
+- **Round 7** (2026-10-19, DeepSeek V4.1 Flash, read-only, whole repository, Stage 8 T8.1):
+  verdict **"sound with minor issues"**, no blocker, ready for handover once the sign-off commit
+  lands its minor items. A: a stale `ApiKeySecurityTest` count in the matrix (12 → 13); B: D14's
+  public-surface bullet and the README D5 summary still implied health-only public (the static
+  `/demo/**` page is intentionally public, D15); C: the owner's `.gitignore` addition was still
+  uncommitted (committed separately for a clean checkout); D–F nits: "health public" wording,
+  no `LICENSE` (owner's call) and an optional `isUniqueEventIdViolation` full-chain-scan
+  hardening (no current failure path — deferred). All prior review findings (rounds 1–6) were
+  re-verified as closed. **Project handed over for the owner's final acceptance.**
