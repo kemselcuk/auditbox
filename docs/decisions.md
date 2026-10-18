@@ -120,15 +120,18 @@ decision → rationale/alternatives.
   (`JsonFormatMapperConfiguration`), because Hibernate's default Jackson 3 mapper reads JSON
   numbers as double nodes. End-to-end precision is proven by `EventApiControllerTest`
   (`1.00000000000000000001` stored and returned exactly; posting `1` for the same eventId → 409).
-- Review round 2 (2026-10-18): metadata numbers are bounded at validation by `@ValidMetadata` —
-  at most 1000 integer and 1000 fractional digits in canonical (trailing-zeros-stripped) decimal
-  form, computed from `BigDecimal.precision()/scale()` in O(1), so a literal like `1e2000000000`
-  is rejected before any allocation. The read side is aligned at 4096 characters
-  (`max-number-length` for MVC and for Hibernate's `FormatMapper`), comfortably above the 2002
-  characters the bounds allow, so every accepted number survives the jsonb read-back. The
-  validator reuses the hasher's `canonicalNumber()`, so validation and hashing cannot drift.
-  BigDecimal values are rendered as plain decimals (no exponent notation) on both mappers; JSON
-  object key order is not significant and may be normalized by jsonb (review round 2 F4).
+- Review round 2 (2026-10-18, completed in re-review 2b/2c): metadata numbers are bounded at
+  validation by `@ValidMetadata` on two forms, both computed in `long` from
+  `BigDecimal.precision()/scale()` in O(1) so huge-exponent literals are rejected before any
+  allocation: the canonical (trailing-zeros-stripped) form at 1000 integer + 1000 fractional
+  digits, and the stored (unstripped, literal-scale) form at 4000 total plain digits. The read
+  side is aligned at 4096 characters (`max-number-length` for MVC and for Hibernate's
+  `FormatMapper`), above the 4002 characters the stored-form bound allows, so every accepted
+  number survives the jsonb read-back and Hibernate's save-time deep copy; `long` arithmetic
+  prevents integer wrap for exponents such as `1e2147483647`. The validator reuses the hasher's
+  `canonicalNumber()`, so validation and hashing cannot drift. BigDecimal values are rendered as
+  plain decimals (no exponent notation) on both mappers; JSON object key order is not significant
+  and may be normalized by jsonb (review round 2 F4).
 - Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
   Rejected: hashing raw request bytes (formatting changes would break idempotency).
 
@@ -165,8 +168,9 @@ decision → rationale/alternatives.
   handler mapping, outside the controller-scoped advice.
 - Validation: `eventId`/`userId`/`eventType`/`source` not blank, max 128; `occurredAt` ISO-8601
   offset date-time as accepted by `OffsetDateTime.parse` (an offset is required; fractional
-  seconds optional); `metadata` any JSON value, bounded to 1000 integer and 1000 fractional digits
-  per number in canonical decimal form (`@ValidMetadata`); absent ≡ null.
+  seconds optional); `metadata` any JSON value, bounded per number to 1000 integer and 1000
+  fractional digits in canonical decimal form and 4000 total digits in the stored (unstripped)
+  form (`@ValidMetadata`); absent ≡ null.
 - Rendering: BigDecimal numbers are written as plain decimals (no exponent notation) on both the
   MVC and Hibernate mappers, so `1e2` renders as `100`; JSON object key order is not significant
   and jsonb may normalize it on read-back.
