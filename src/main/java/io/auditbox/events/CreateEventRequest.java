@@ -20,8 +20,9 @@ import tools.jackson.databind.JsonNode;
  * <p>The metadata tree is read by the Spring MVC mapper with
  * {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS} (application.yml, D10) so client
  * decimals reach the hash and storage exactly, and its numbers are bounded by
- * {@link ValidMetadata}: no metadata number may exceed the supported digit counts of the
- * canonical decimal form (review round 2, F1/F2).
+ * {@link ValidMetadata}: 1000 integer and 1000 fractional digits in canonical decimal form,
+ * and 4000 total digits in the stored (unstripped) form (review round 2 F1/F2, re-review
+ * B1/B2).
  */
 @Schema(description = "Event ingestion request (D1). The eventId is the idempotency key (D4).")
 public record CreateEventRequest(

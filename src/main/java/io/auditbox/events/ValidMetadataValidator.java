@@ -38,7 +38,7 @@ import tools.jackson.databind.JsonNode;
  * trailing zeros survive — {@code 1.000…0e-999} canonicalizes to 999 fractional digits
  * (accepted by the canonical bounds) yet its stored plain form has thousands of digits.
  * Hibernate deep-copies the {@code JsonNode} through the {@code FormatMapper} on save
- * (serialize + re-parse), so a stored form above the 4096-character read constraint of
+ * (serialize + re-parse), so a stored form above the 4096-digit read constraint of
  * {@link JsonFormatMapperConfiguration} fails the insert itself with a 500 instead of a 400.
  * Bounding the instance's total plain digits keeps every accepted value under that read limit.
  *
@@ -120,7 +120,7 @@ public class ValidMetadataValidator implements ConstraintValidator<ValidMetadata
 	/**
 	 * Bounds the stored form — the exact instance as parsed, with the literal's scale kept
 	 * (B1): at most {@link #MAX_STORED_DIGITS} total plain digits, so every accepted value
-	 * renders below the 4096-character read constraint on every Hibernate round trip.
+	 * renders below the 4096-digit read constraint on every Hibernate round trip.
 	 */
 	private boolean storedFormWithinBounds(BigDecimal value) {
 		long scale = value.scale();

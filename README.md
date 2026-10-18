@@ -10,7 +10,7 @@ AuditBox is a small event-history service: it will accept transaction/event hist
 store it in PostgreSQL, and serve it back with filters and stable keyset pagination. Target
 behavior: ingestion is idempotent per `eventId` (Stage 3), listing uses keyset pagination
 (Stage 4), and access is authenticated with a static `X-API-Key` (Stage 5). Today the skeleton,
-schema, and canonical hash are in place — see the status line below.
+schema, canonical hash, and write API are in place — see the status line below.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
