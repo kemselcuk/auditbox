@@ -191,26 +191,34 @@ decision → rationale/alternatives.
 
 - Decision: `GET /api/v1/events` with optional exact-match filters `userId`, `eventType`,
   `source`; optional inclusive bounds `occurredFrom`/`occurredTo` (ISO-8601 with offset); an
-  optional opaque `cursor`; `size` default 20, 1..100. Order `occurred_at DESC, event_id DESC`
-  (D3). Response envelope `{"items":[EventResponse...],"nextCursor":...}`; `nextCursor` is
-  non-null only when a (size + 1)-th row exists; no total count.
-- Cursor: URL-safe Base64 without padding over the strict JSON document
-  `{"occurredAt":"<UTC, microseconds>","eventId":"<id>"}`; decode requires exactly these two
-  textual fields, a parseable date-time and a 1..128-character eventId; anything else is 400.
-  The cursor is opaque and unsigned (clients may craft positions; it is not an authorization
-  token), but crafting cannot produce a 500 or an unbounded scan.
+  optional opaque `cursor`; `size` default 20, 1..100. Blank filters count as absent; repeated
+  query parameters are comma-joined by the servlet layer (documented, not rejected). Order
+  `occurred_at DESC, event_id DESC` (D3). Response envelope
+  `{"items":[EventResponse...],"nextCursor":...}`; `nextCursor` is non-null only when a
+  (size + 1)-th row exists; no total count.
+- Cursor: URL-safe Base64 without padding over a strict JSON document
+  `{"occurredAt":"<ISO-8601 UTC instant, variable precision up to microseconds>","eventId":"<id>"}`;
+  decode requires exactly these two textual fields (duplicate keys rejected), a parseable
+  date-time inside the supported range, and a non-blank, NUL-free 1..128-character eventId;
+  anything else is 400. The encoded token is capped at 1200 characters (the worst write-legal
+  cursor is ~1104), so the API never emits a cursor it would reject. The cursor is opaque and
+  unsigned (clients may craft positions; it is not an authorization token), but crafting cannot
+  produce a 500 or an unbounded scan.
 - Query: Spring Data JPA 4.1 fluent Specification API
   (`findBy(spec, q -> q.sortBy(...).limit(size + 1).all())`) — exactly one SELECT per page;
   `Page<T>` was rejected because it issues a COUNT for the total (asserted via Hibernate
   statistics in the tests).
-- Errors: malformed cursor, non-ISO-8601 bounds, inverted range, size outside 1..100 → 400
-  Problem Details with a descriptive detail (no `errors` extension; that is reserved for body
-  validation).
+- Errors: malformed cursor, non-ISO-8601 bounds or cursor times outside the supported range
+  `0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z`, inverted range, NUL characters in
+  filters/cursor, size outside 1..100 → 400 Problem Details; the detail names the offending
+  parameter (no `errors` extension; that is reserved for body validation).
 - Stability: the keyset predicate `(occurred_at < :cursorTime) OR (occurred_at = :cursorTime
   AND event_id < :cursorId)` makes a page walk immune to inserts between pages; a new event can
   only appear before the cursor or at the end. `event_id` ordering uses the database collation
   consistently in ORDER BY and in the predicate.
 - Rationale: keyset pagination yields stable pages under concurrent writes without counting;
   the JSON+Base64 cursor keeps eventIds with special characters safe and the decode strict.
-- Evidence: 21 list API tests + 14 cursor unit tests (143 total); a live walk traversed 3 pages
-  with a 3-row equal-timestamp tie group without duplicates.
+- Evidence: 34 list API tests + 18 cursor unit tests (160 total); a live walk with a
+  control-character 128-char eventId produced a 556-character cursor that replayed successfully
+  (the pre-fix 512 cap rejected it); a live 3-page walk traversed a 3-row equal-timestamp tie
+  group without duplicates.
