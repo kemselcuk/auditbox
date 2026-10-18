@@ -86,9 +86,12 @@ decision → rationale/alternatives.
   - Spring Boot 4 renames applied vs the 3.x names: `spring-boot-starter-web` →
     `spring-boot-starter-webmvc`, dedicated `spring-boot-starter-flyway`, Testcontainers 2.x
     artifact names (`testcontainers-postgresql`, `testcontainers-junit-jupiter`).
-  - Jackson 3 note (Stage 2 evidence): Boot 4 wires **Jackson 3** (`tools.jackson.*`, 3.1.5), not
-    Jackson 2. A Jackson 2.21.5 jar remains on the test classpath (via springdoc/yaml), so imports
-    from the wrong package can still compile. Application code must import `tools.jackson`.
+  - Jackson 3 note (Stage 2 evidence, corrected in review round 1): Boot 4 wires **Jackson 3**
+    (`tools.jackson.*`, 3.1.5) for Spring MVC. Jackson 2
+    (`com.fasterxml.jackson.core:jackson-databind` 2.21.5) is still a **compile/runtime** dependency
+    via `springdoc-openapi-starter-common`, and `jackson-annotations:2.21` is a required dependency
+    of Jackson 3's databind. Two Jackson generations therefore coexist at runtime (Spring MVC uses
+    Jackson 3, springdoc uses Jackson 2); application code must import `tools.jackson`.
 
 ## D10 — Canonical content hash (T2.2)
 

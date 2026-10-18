@@ -27,9 +27,8 @@ PostgreSQL, and serves it back with filters and stable pagination. Single servic
 ## Commands
 
 - Build and test: `./mvnw verify`
-- Start database: `docker compose up -d db`
-- Run app locally: `./mvnw spring-boot:run`
-- Full stack: `docker compose up --build`
+- Start database: `docker compose up -d db` (host port 5432; set `DB_PORT` if it is occupied)
+- Run app locally: `./mvnw spring-boot:run -Dspring-boot.run.profiles=local`
 
 ## Working rules
 

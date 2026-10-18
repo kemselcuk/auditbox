@@ -6,9 +6,11 @@ Created in [T3 Code](https://t3.codes).
 
 ## Overview
 
-AuditBox is a small event-history service: it accepts transaction/event history over HTTP, stores
-it in PostgreSQL, and serves it back with filters and stable keyset pagination. Ingestion is
-idempotent per `eventId`, and access is authenticated with a static `X-API-Key`.
+AuditBox is a small event-history service: it will accept transaction/event history over HTTP,
+store it in PostgreSQL, and serve it back with filters and stable keyset pagination. Target
+behavior: ingestion is idempotent per `eventId` (Stage 3), listing uses keyset pagination
+(Stage 4), and access is authenticated with a static `X-API-Key` (Stage 5). Today the skeleton,
+schema, and canonical hash are in place — see the status line below.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
@@ -45,14 +47,15 @@ auditbox-db   postgres:18-alpine   "docker-entrypoint.s…"   db        8 second
 DB_PORT=5433 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-Expected startup (abridged real output):
+Expected startup on a second run (abridged real output; the first run on an empty volume also logs
+`<< Empty Schema >>` and `Migrating schema "public" to version "1 - create events"`):
 
 ```text
-... o.f.core.FlywayExecutor  : Database: jdbc:postgresql://localhost:5433/auditbox (PostgreSQL 18.6)
-... o.f.core.internal.command.DbValidate : Successfully validated 1 migration (execution time 00:00.014s)
-... o.f.core.internal.command.DbMigrate : Current version of schema "public": 1
-... o.s.boot.tomcat.TomcatWebServer : Tomcat started on port 8080 (http) with context path '/'
-... io.auditbox.AuditBoxApplication : Started AuditBoxApplication in 2.348 seconds (process running for 2.54)
+... org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:5433/auditbox (PostgreSQL 18.6)
+... o.f.core.internal.command.DbValidate     : Successfully validated 1 migration (execution time 00:00.014s)
+... o.f.core.internal.command.DbMigrate      : Current version of schema "public": 1
+... o.s.boot.tomcat.TomcatWebServer          : Tomcat started on port 8080 (http) with context path '/'
+... io.auditbox.AuditBoxApplication          : Started AuditBoxApplication in 2.348 seconds (process running for 2.542)
 ```
 
 Flyway applies `V1__create_events.sql` on first start; later starts validate the migration and
