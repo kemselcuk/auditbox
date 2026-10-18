@@ -1,0 +1,8 @@
+# Local profile: run the app on the host against the docker compose PostgreSQL
+# from this repository (docker compose up -d db). Every value can be overridden
+# via environment variables; the defaults match .env.example and are safe locally.
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:auditbox}
+    username: ${DB_USER:auditbox}
+    password: ${DB_PASSWORD:auditbox}

@@ -1,0 +1,20 @@
+# AuditBox base configuration. Profile-specific files: application-local.yml, application-test.yml.
+
+spring:
+  application:
+    name: auditbox
+  flyway:
+    enabled: true
+  jpa:
+    # The database schema is owned by Flyway migrations (from Stage 2 on); Hibernate only
+    # validates. With no entities in Stage 1, validate is a no-op against the empty schema
+    # (verified by the Testcontainers integration test).
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

@@ -1,0 +1,10 @@
+# Test profile: used by the Testcontainers integration test. The datasource URL and
+# credentials are provided by @ServiceConnection at runtime. The entries below make the
+# configuration choices explicit and independent of base-file defaults.
+spring:
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
