@@ -59,15 +59,15 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T5.1 | Stateless Spring Security + API key filter; constant-time comparison; missing/wrong key → 401 (Problem Details); `prod` fails fast without a key; health public; Swagger dev-profile only | Security tests green (401/401/201 pattern); README "Authentication"; OpenAPI security scheme present | in progress |
+| T5.1 | Stateless Spring Security + API key filter; constant-time comparison; missing/wrong key → 401 (Problem Details); `prod` fails fast without a key; health public; Swagger dev-profile only | Security tests green (401/401/201 pattern); README "Authentication"; OpenAPI security scheme present | done |
 
 ### Stage 6 — Demo package
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T6.1 | Small Java client (JDK HttpClient, no extra dependencies) generating N sample events | Client run against the local app produces seeded events; usage documented | pending |
-| T6.2 | Single-page web demo (vanilla HTML+JS served by the app): API key input, filters, table, "load more" cursor, send-event form | Verified in a browser by the orchestrator (screenshot into `docs/images/`); README steps reproduce it | pending |
-| T6.3 | Deterministic dedupe script: concurrent identical eventId submissions (HTTP status distribution + DB row count) and a different-content 409 case; one command, stable output | Script output embedded in README as a real transcript | pending |
+| T6.1 | Small Java client (JDK HttpClient, no extra dependencies) generating N sample events | Client run against the local app produces seeded events; usage documented | in progress |
+| T6.2 | Single-page web demo (vanilla HTML+JS served by the app): API key input, filters, table, "load more" cursor, send-event form | Verified in a browser by the orchestrator (screenshot into `docs/images/`); README steps reproduce it | in progress |
+| T6.3 | Deterministic dedupe script: concurrent identical eventId submissions (HTTP status distribution + DB row count) and a different-content 409 case; one command, stable output | Script output embedded in README as a real transcript | in progress |
 
 ### Stage 7 — Test hardening and README
 
@@ -122,3 +122,12 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
   pending L1/L2 doc precision, L3 legacy-row hygiene and the I1 attribution; no behavioral
   findings, 164 tests green. Conditions met in `66f8337`; local out-of-range legacy rows deleted.
   **Stage 4 signed off.**
+- **Round 4** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 5): verdict **"sound with minor
+  issues"**, nothing blocking. F1 raw invalid percent-escapes returned 500 (pre-existing Stage 4
+  gap), F2 `/logout` answered 302 without a key, F3 whitespace in `API_KEY` caused a silent
+  outage, F4 the Swagger UI needs a header-capable client; plus test/javadoc nits. Fixes
+  `eddb75d`, `6842584`.
+- **Round 4b** (2026-10-18, sign-off): verdict **"sound with minor issues"** — all round-4
+  findings and nits verified closed, 187 tests green, live probes reproduce the behaviour; only
+  documentation nits remained (D14 count, review log, two javadocs), fixed in `74b1d56`.
+  **Stage 5 signed off.**
