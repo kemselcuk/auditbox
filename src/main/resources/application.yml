@@ -23,8 +23,9 @@ spring:
           # 2, F1/F2 and re-review blockers B1/B2): an accepted metadata number has at most
           # 1000 integer + 1000 fractional digits in canonical (trailing-zeros-stripped)
           # form and at most 4000 total digits in its stored (unstripped, literal-scale)
-          # form — up to 4002 plain decimal characters (e.g. an idempotent retry that echoes
-          # the API response verbatim). Jackson's default 1000 would 400 such legal
+          # form — up to 4003 characters including sign, decimal point and leading zero
+          # (4001 digits; this limit counts digits, e.g. an idempotent retry that echoes the
+          # API response verbatim). Jackson's default 1000 would 400 such legal
           # literals; oversized/bound-exceeding numbers are rejected with a precise field
           # error by the validator instead.
           max-number-length: 4096

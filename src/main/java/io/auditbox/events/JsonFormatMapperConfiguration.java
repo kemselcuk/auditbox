@@ -33,11 +33,12 @@ import tools.jackson.databind.json.JsonMapper;
  * <ul>
  *   <li><strong>Number-length read constraint.</strong> PostgreSQL jsonb renders stored
  *       numbers as plain decimals, so a metadata number at the validation bounds renders
- *       to at most 4002 characters of plain text: 4000 total stored-form digits
- *       ({@link ValidMetadataValidator#MAX_STORED_DIGITS}) plus the decimal point. Jackson's
- *       default read constraint (1000 digits per number) would reject exactly those legal
- *       values and turn an idempotent replay into a 500; raised to comfortably above the
- *       validation bound.</li>
+ *       to at most 4003 characters of plain text: 4000 total stored-form digits
+ *       ({@link ValidMetadataValidator#MAX_STORED_DIGITS}) plus a possible negative sign,
+ *       the decimal point and a leading zero (4001 digits). Jackson's default read
+ *       constraint (1000 digits per number) would reject exactly those legal values and
+ *       turn an idempotent replay into a 500; raised to comfortably above the validation
+ *       bound.</li>
  *   <li><strong>Plain decimal writing.</strong> Numbers are written without exponent
  *       notation ({@code 1e+3} becomes {@code 1000}), matching the API response rendering
  *       and keeping the stored/compared JSON forms stable.</li>
@@ -52,9 +53,9 @@ class JsonFormatMapperConfiguration {
 
 	/**
 	 * Read bound above every value {@link ValidMetadataValidator} can accept: a validated
-	 * number has at most 4000 total stored-form digits ({@code 0.} plus the digits, i.e. at
-	 * most 4002 plain decimal characters); 4096 keeps parsing cost trivially bounded while
-	 * leaving headroom.
+	 * number has at most 4000 total stored-form digits, i.e. at most 4003 characters including
+	 * a possible negative sign, the decimal point and a leading zero (4001 digits); the limit
+	 * counts digits. 4096 keeps parsing cost trivially bounded while leaving headroom.
 	 */
 	static final int MAX_NUMBER_LENGTH = 4096;
 

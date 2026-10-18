@@ -137,13 +137,35 @@ class ValidMetadataValidatorTest {
 	}
 
 	@Test
+	void rejectsTrailingZeroExponentsThatWouldOverflowStripTrailingZeros() {
+		// Re-review 2c F1: stripping trailing zeros pushes the scale below Integer.MIN_VALUE for
+		// these literals (100e2147483647 and friends), which threw out of the validator and
+		// surfaced as a 500. The unstripped integer-digit check rejects before stripping.
+		assertThat(valid("{\"n\":100e2147483647}")).isFalse();
+		assertThat(valid("{\"n\":1000e2147483646}")).isFalse();
+		assertThat(valid("{\"n\":1000e2147483647}")).isFalse();
+		assertThat(valid("{\"n\":10000e2147483645}")).isFalse();
+
+		JsonNode node = JsonNodeFactory.instance.objectNode().set("n",
+				JsonNodeFactory.instance.numberNode(new BigDecimal(BigInteger.valueOf(100), -2147483647)));
+		assertThat(valid(node)).isFalse();
+	}
+
+	@Test
+	void acceptsTheWidestNegativeStoredForm() {
+		// 4000 stored digits with a negative sign render as 4003 characters, the widest form the
+		// validator accepts (re-review 2c F5).
+		assertThat(valid("{\"n\":-1." + "0".repeat(3001) + "e-999}")).isTrue();
+	}
+
+	@Test
 	void acceptsAStoredFormOfExactlyFourThousandDigits() {
 		// B1 boundary. For the literal "1." + "0".repeat(n) + "e-999" the parsed instance has
 		// precision n + 1 and scale n + 999, so the stored plain form has
 		// max(precision - scale, 0) + max(scale, 0) = n + 999 digits, while the canonical
 		// form is always 1e-999 (999 fractional digits, inside the canonical bounds).
 		// n = 3001: exactly 4000 stored digits — at the stored-form bound, accepted. The
-		// rendering is 4002 characters ("0." plus the digits), under the 4096 read limit.
+		// rendering is 4002 characters, under the 4096-digit read limit.
 		assertThat(valid("{\"n\":1." + "0".repeat(3001) + "e-999}")).isTrue();
 	}
 
@@ -158,7 +180,7 @@ class ValidMetadataValidatorTest {
 	@Test
 	void rejectsAStoredFormAboveTheReadLimitThatTheCanonicalBoundsAccept() {
 		// The exact shape from re-review B1: n = 3098 renders to 4099 plain characters
-		// (4097 stored digits plus "0.") — above the 4096-character read limit, so before
+		// (4097 stored digits plus "0.") — above the 4096-digit read limit, so before
 		// the stored-form bound existed it passed the canonical bounds and failed the jsonb
 		// insert itself with a 500. The literal itself is under 4096 characters and parses.
 		assertThat(valid("{\"n\":1." + "0".repeat(3098) + "e-999}")).isFalse();

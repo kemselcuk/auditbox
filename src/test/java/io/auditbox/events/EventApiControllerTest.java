@@ -633,10 +633,10 @@ class EventApiControllerTest {
 
 	/**
 	 * B1: the literal from the re-review report — one zero more than the accepted boundary
-	 * above ({@code n = 3098}, 4097 stored digits, a 4099-character plain form above the
-	 * 4096-character read limit) passed the canonical bounds (999 fractional digits) and
-	 * failed the jsonb insert itself with a 500. The stored-form bound rejects it at
-	 * validation with a metadata field error, no row stored.
+	 * above ({@code n = 3098}, 4097 stored digits, a plain form above the 4096-digit read
+	 * limit) passed the canonical bounds (999 fractional digits) and failed the jsonb insert
+	 * itself with a 500. The stored-form bound rejects it at validation with a metadata field
+	 * error, no row stored.
 	 */
 	@Test
 	void metadataNumberBeyondTheStoredDigitBoundReturns400AndStoresNoRow() throws Exception {
@@ -689,6 +689,43 @@ class EventApiControllerTest {
 				.startsWith("application/problem+json");
 		assertThat(JSON.readTree(response.body()).get("title").stringValue()).isEqualTo("Bad Request");
 		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * Re-review 2c F1: 100e2147483647 carries trailing zeros plus a scale near
+	 * Integer.MIN_VALUE. stripTrailingZeros() used to overflow inside the validator,
+	 * surfacing as a 500; the unstripped integer-digit check now rejects it with a metadata
+	 * field error and no row.
+	 */
+	@Test
+	void metadataNumberWithTrailingZeroExponentReturns400AndStoresNoRow() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> response = post(eventJson(eventId, "user-strip-overflow", "payment.settled",
+				"core-banking", "2026-10-18T12:00:00Z", "{\"amount\":100e2147483647}"));
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(fieldNames(JSON.readTree(response.body()))).contains("metadata");
+		assertThat(eventRowCount(eventId)).isEqualTo(0);
+	}
+
+	/**
+	 * Re-review 2c F5: the negative twin of the stored-digit boundary is the widest accepted
+	 * rendering (4003 characters); it must store and replay like the positive one.
+	 */
+	@Test
+	void negativeMetadataNumberAtTheStoredDigitBoundIsAcceptedAndReplays() throws Exception {
+		String eventId = uniqueEventId();
+		String body = eventJson(eventId, "user-negative-bound", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00Z", "{\"amount\":-1." + "0".repeat(3001) + "e-999}");
+
+		HttpResponse<String> first = post(body);
+		HttpResponse<String> retry = post(body);
+
+		assertThat(first.statusCode()).isEqualTo(201);
+		assertThat(retry.statusCode()).isEqualTo(200);
+		assertThat(eventRowCount(eventId)).isEqualTo(1);
+		assertThat(first.body()).contains("\"amount\":-0.").doesNotContain("E-");
 	}
 
 	private static String digits(int count) {

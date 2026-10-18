@@ -57,8 +57,8 @@ public class ValidMetadataValidator implements ConstraintValidator<ValidMetadata
 	/**
 	 * Maximum total plain decimal digits (integer + fractional) of a metadata number in its
 	 * stored form — the instance as parsed, unstripped (B1). 4000 digits render as at most
-	 * 4002 characters ({@code 0.} plus the digits), safely under the 4096-character read
-	 * constraint the value must survive on every Hibernate round trip.
+	 * 4003 characters (negative sign plus the {@code 0.} prefix), safely under the 4096-digit
+	 * read constraint the value must survive on every Hibernate round trip.
 	 */
 	public static final int MAX_STORED_DIGITS = 4000;
 
@@ -106,10 +106,15 @@ public class ValidMetadataValidator implements ConstraintValidator<ValidMetadata
 	 * {@link #MAX_FRACTIONAL_DIGITS} fractional digits.
 	 */
 	private boolean canonicalFormWithinBounds(BigDecimal value) {
+		// Reject on the unstripped integer digits first: stripping trailing zeros preserves the
+		// integer digit count, and this early return keeps stripTrailingZeros() away from scales
+		// near Integer.MIN_VALUE, where it throws ArithmeticException("Overflow") for literals
+		// such as 100e2147483647 (re-review round 2c F1, the residual of B2).
+		if (integerDigits(value.precision(), value.scale()) > MAX_INTEGER_DIGITS) {
+			return false;
+		}
 		BigDecimal canonical = value.stripTrailingZeros();
-		long scale = canonical.scale();
-		return integerDigits(canonical.precision(), scale) <= MAX_INTEGER_DIGITS
-				&& Math.max(scale, 0) <= MAX_FRACTIONAL_DIGITS;
+		return Math.max(canonical.scale(), 0) <= MAX_FRACTIONAL_DIGITS;
 	}
 
 	/**
