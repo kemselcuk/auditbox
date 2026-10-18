@@ -60,10 +60,10 @@ public class ApiKeySecurityConfiguration {
 						// Static single-page demo only — never the API (plan task T6.2).
 						.requestMatchers("/demo/**").permitAll()
 						.anyRequest().authenticated())
-				.addFilterBefore(new ApiKeyAuthenticationFilter(properties, metrics),
+				.addFilterBefore(new ApiKeyAuthenticationFilter(properties),
 						UsernamePasswordAuthenticationFilter.class)
 				.exceptionHandling(exceptions -> exceptions
-						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint()))
+						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint(metrics)))
 				.build();
 	}
 }

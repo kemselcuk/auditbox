@@ -28,7 +28,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Milestone 9.4: Micrometer counters in the write path and the API-key filter, exposed
+ * Milestone 9.4: Micrometer counters in the write path and the API-key entry point, exposed
  * through the (key-protected) {@code /actuator/metrics} endpoint over real HTTP:
  *
  * <ul>
@@ -38,7 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code reason=missing} (a wrong key with {@code reason=invalid}; the key itself is
  *       never a tag value),</li>
  *   <li>{@code /actuator/metrics/auditbox.events.created} answers 401 without a key and 200
- *       with it, carrying the metric name and a COUNT ≥ the increments the test made.</li>
+ *       with it, carrying the metric name and a COUNT ≥ the increments the test made,</li>
+ *   <li>a percent-encoded public path ({@code /actuator/%68ealth}) is served without a key
+ *       and does not count as an auth failure (review F2).</li>
  * </ul>
  *
  * <p>Assertions are made against the counter values observed <em>before</em> each request
@@ -123,6 +125,22 @@ class MetricsApiControllerTest {
 				.map(meter -> meter.getId().getTags())
 				.flatMap(tags -> tags.stream().map(tag -> tag.getValue()))
 				.forEach(tagValue -> assertThat(tagValue).doesNotContain(wrongKey));
+	}
+
+	@Test
+	void percentEncodedPublicPathIsServedAndNotCountedAsAuthFailure() throws Exception {
+		double missingBefore = count(AuditMetrics.AUTH_FAILURES, AuditMetrics.AUTH_FAILURE_REASON_MISSING);
+		double invalidBefore = count(AuditMetrics.AUTH_FAILURES, AuditMetrics.AUTH_FAILURE_REASON_INVALID);
+
+		// Tomcat decodes the path for the security matcher, so the health endpoint answers
+		// without a key; the counter must not see this as a failed key check (review F2).
+		HttpResponse<String> response = getWithoutKey("/actuator/%68ealth");
+
+		assertThat(response.statusCode()).isEqualTo(200);
+		assertThat(count(AuditMetrics.AUTH_FAILURES, AuditMetrics.AUTH_FAILURE_REASON_MISSING))
+				.isEqualTo(missingBefore);
+		assertThat(count(AuditMetrics.AUTH_FAILURES, AuditMetrics.AUTH_FAILURE_REASON_INVALID))
+				.isEqualTo(invalidBefore);
 	}
 
 	@Test

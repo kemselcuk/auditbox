@@ -15,8 +15,9 @@ import org.springframework.stereotype.Component;
  *       (200, D4),</li>
  *   <li>{@code auditbox.events.conflicts} — same eventId with different content (409, D4),</li>
  *   <li>{@code auditbox.auth.failures} — tag {@code reason=missing|invalid} for a request
- *       that failed the static API-key check ({@code ApiKeyAuthenticationFilter}); the key
- *       value itself is never used or logged, only the structural reason.</li>
+ *       that required the static API key and was rejected by the authentication entry point
+ *       (review F2); the key value itself is never used or logged, only the structural
+ *       reason.</li>
  * </ul>
  *
  * <p><code>Counter.increment()</code> keeps absolute counts — Micrometer drops increments

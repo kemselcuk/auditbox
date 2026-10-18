@@ -10,8 +10,6 @@ import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import io.auditbox.metrics.AuditMetrics;
-
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,6 +32,10 @@ import jakarta.servlet.http.HttpServletResponse;
  *
  * <p>The context is stateless per request: with {@code SessionCreationPolicy.STATELESS} and
  * no {@code SecurityContextRepository}, nothing is persisted to a session or cookie.
+ *
+ * <p>Review F2: the filter no longer counts auth failures itself. Counting lives in
+ * {@link ApiKeyAuthenticationEntryPoint}, which runs only when the key was actually required
+ * and rejected — a raw-path check here mis-counted percent-encoded public paths.
  */
 class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
@@ -42,11 +44,8 @@ class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
 	private final ApiKeyProperties properties;
 
-	private final AuditMetrics metrics;
-
-	ApiKeyAuthenticationFilter(ApiKeyProperties properties, AuditMetrics metrics) {
+	ApiKeyAuthenticationFilter(ApiKeyProperties properties) {
 		this.properties = properties;
-		this.metrics = metrics;
 	}
 
 	@Override
@@ -60,14 +59,6 @@ class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 			SecurityContext context = SecurityContextHolder.createEmptyContext();
 			context.setAuthentication(authentication);
 			SecurityContextHolder.setContext(context);
-		}
-		else if (!PublicPaths.matches(request.getRequestURI())) {
-			// Milestone 9.4: failed key checks on key-protected paths count — reason=missing
-			// when no header was sent, reason=invalid when a non-blank value did not match.
-			// The tag is structural only; the key itself never appears here or in any log.
-			metrics.authFailure(provided == null || provided.isBlank()
-					? AuditMetrics.AUTH_FAILURE_REASON_MISSING
-					: AuditMetrics.AUTH_FAILURE_REASON_INVALID);
 		}
 		filterChain.doFilter(request, response);
 	}

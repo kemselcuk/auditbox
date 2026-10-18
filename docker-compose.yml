@@ -32,8 +32,10 @@ services:
       start_period: 10s
 
   # Application container (opt-in, Milestone 9.2). Not started by the default
-  # db-only workflow: add the "app" profile, e.g. docker compose --profile app up --build -d.
+  # db-only workflow: the "app" profile keeps it out of `docker compose up` runs,
+  # e.g. docker compose --profile app up --build -d (review F1).
   app:
+    profiles: ["app"]
     build: .
     image: auditbox:local
     container_name: auditbox-app

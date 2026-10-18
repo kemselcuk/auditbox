@@ -126,6 +126,14 @@
 						<goals>
 							<goal>makeBom</goal>
 						</goals>
+						<configuration>
+							<!-- Review F3: the Spring Boot parent already binds its default
+							     makeAggregateBom execution (generate-resources), which attaches the
+							     SBOM artifact. Attaching this one too replaced it and logged a
+							     warning on every build; this execution only needs to write
+							     target/bom.json for CI. -->
+							<skipAttach>true</skipAttach>
+						</configuration>
 					</execution>
 				</executions>
 			</plugin>

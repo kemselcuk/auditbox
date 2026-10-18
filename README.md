@@ -34,7 +34,7 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
-is [docs/decisions.md](docs/decisions.md) (D1–D15).
+is [docs/decisions.md](docs/decisions.md) (D1–D17).
 
 ## What this is / is not
 
@@ -197,7 +197,7 @@ Stop the full stack, keeping data: `docker compose --profile app down`. Delete d
 
 ## API
 
-Both endpoints live under `/api/v1/events` and require the API key. Machine-readable OpenAPI
+All endpoints live under `/api/v1/events` and require the API key. Machine-readable OpenAPI
 is served at `/v3/api-docs`, the UI at `/swagger-ui/index.html` — both **disabled by default**
 (D5); enable them with the dev profile, e.g.
 `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`. Documentation requires the API
@@ -323,8 +323,8 @@ Unknown `eventId` → `404 Not Found` Problem Details with a generic detail (no 
 
 ```text
 HTTP/1.1 404
-{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1/events/unknown-id",
- "detail":"Event not found"}
+{"detail":"Event not found","instance":"/api/v1/events/unknown-id","status":404,
+ "title":"Not Found"}
 ```
 
 ## Observability
@@ -549,7 +549,7 @@ per class:
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
 | `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI (including the `{eventId}` fetch), 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
-| `MetricsApiControllerTest` | Micrometer counters over real HTTP: created/replayed/conflict deltas for 201/200/409, auth-failure `reason=missing|invalid` tags (key never tagged), metrics endpoint 401 without / 200 with the key (milestone 9.4) |
+| `MetricsApiControllerTest` | Micrometer counters over real HTTP: created/replayed/conflict deltas for 201/200/409, auth-failure `reason=missing|invalid` tags (key never tagged), metrics endpoint 401 without / 200 with the key, percent-encoded public path served without counting as a failure (milestone 9.4, review F2) |
 | `RequestIdFilterTest` | correlation filter: safe-pattern decision boundaries (echo verbatim vs. generated UUID, length 1/128/129), unsafe-id scrubbing over real HTTP, echo on 401 responses (milestone 9.5) |
 | `EventCursorTest` | cursor codec unit tests: round trips and every strict rejection (T4.1/T4.2) |
 | `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries (D10/D12; rejection is allocation-free by design — a code-level property, not a timing test) |
@@ -566,15 +566,16 @@ browser demo, dedupe transcript) and the recorded evidence gaps.
 
 The demo transcripts and the screenshot above are real runs, not mock-ups; API responses in
 this README were captured from a live local run. Continuous integration runs the same suite
-on every push/PR to `main` (badge at the top of this document). Every CI run always uploads
-the CycloneDX SBOM of the build as the `sbom` artifact: the
+on every push/PR to `main` (badge at the top of this document). CI uploads the CycloneDX SBOM
+of the build as the `sbom` artifact whenever the build reaches the package phase (the upload
+step never fails a run; a build that stops earlier has nothing to upload): the
 [cyclonedx-maven-plugin](https://cyclonedx.github.io/cyclonedx-maven-plugin) writes
 `target/bom.json` (CycloneDX v1.6 JSON) on every `package`/`verify` (Milestone 9.6).
 
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D15), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D17), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,

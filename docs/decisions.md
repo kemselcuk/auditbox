@@ -319,8 +319,10 @@ decision → rationale/alternatives.
 - Decision: extend the delivered service with portfolio/ops improvements without changing the
   existing API semantics:
   - **CI:** GitHub Actions on every push/PR to `main` — build + `./mvnw -B verify` against
-    Testcontainers, a second job that builds the Docker image, always-uploaded SBOM, and
-    surefire reports on failure; a README badge links to it.
+    Testcontainers, a second job that builds the Docker image, an SBOM upload step that runs on
+    every CI run (it uploads whenever the build reached `package`; a failure before that has no
+    file to upload and the step never fails the job), and surefire reports on failure; a README
+    badge links to it.
   - **Container:** multi-stage Dockerfile (Maven build → Temurin 21 JRE, non-root), a
     `.dockerignore`, and an opt-in compose `app` profile (`docker compose --profile app up
     --build`) that waits for the db healthcheck. The default db-only workflow is unchanged.
@@ -338,9 +340,20 @@ decision → rationale/alternatives.
     package; CI uploads it as the `sbom` artifact.
 - Rationale: close the final review's operational gaps at EUR 0 (public-repo Actions, OSS
   tooling) while keeping the single-service/single-table scope.
-- Evidence: 226 tests green; CI run green (build 1m27s, image 1m21s); live probes: 201 with the
-  echoed `X-Request-Id`, by-id 200/404, metrics 401 without / 200 with the key, auth-failure
-  `reason=missing` tag, ECS prod logs, `bom.json` with 112 components.
+- Evidence: 226 tests green before the review; CI run green (3275cbc: build 1m36s, image
+  1m15s, `sbom` artifact 58,574 B); live probes: 201 with the echoed `X-Request-Id`, by-id
+  200/404, metrics 401 without / 200 with the key, auth-failure `reason=missing` tag, ECS prod
+  logs, `bom.json` with 112 components.
+- Review round (2026-10-19, read-only, M9.1–M9.6): verdict **"sound with issues"**; all
+  findings closed — F1 the compose `app` service really carries `profiles: ["app"]` now
+  (`docker compose config` verified), F2 auth-failure counting moved from the raw-path filter
+  check to the authentication entry point, which runs only when a required key was rejected
+  (percent-encoded public paths no longer counted; regression test added — 227 tests), F3 the
+  project's `makeBom` execution sets `skipAttach` so the parent's default execution attaches
+  the single SBOM artifact (duplicate-attach warning gone), F4–F7 wording/examples/timings
+  corrected (404 example matches the live body, "all endpoints", D1–D17). F8 notes (no
+  MDC-cleanup test, exact-equality assertion under hypothetical JUnit parallelism, floating
+  base-image tags) accepted as-is.
 - Open owner decisions: LICENSE type and a Playwright (Java) end-to-end test for the demo page
   (browser binary download) were both decided on 2026-10-19 — see D17; the Playwright suite
   itself is tracked as M9.7.
