@@ -327,6 +327,22 @@ class EventApiControllerTest {
 		}
 	}
 
+	@Test
+	void malformedJsonReturns400ProblemDetailsWithAGenericDetail() throws Exception {
+		HttpResponse<String> response = post("{not json");
+
+		assertThat(response.statusCode()).isEqualTo(400);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(problem.get("detail").stringValue()).isEqualTo("Malformed or unreadable request body");
+		// The errors extension is reserved for Bean Validation; a malformed body must not
+		// leak parser internals (review round 6, F2).
+		assertThat(problem.has("errors")).isFalse();
+		assertThat(response.body()).doesNotContain("org.", "Exception");
+	}
+
 	// ---------------------------------------------------------------------
 	// T3.2 acceptance: concurrency on real HTTP
 	// ---------------------------------------------------------------------

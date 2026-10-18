@@ -36,8 +36,8 @@ AuditBox **records what it receives**; nothing more is claimed about history:
   content identity, and protects nothing.
 - It is the only service in this repository (no event platform, no sidecar), and the
   PostgreSQL database is the only data store, with a single `events` table.
-- There is no total-count API, no offset pagination, and no framework-managed OTAP/data
-  platform: those are recorded as rejected alternatives ([docs/decisions.md](docs/decisions.md)).
+- There is no total-count API and no offset pagination (rejected alternatives, D3); no event
+  platform such as Kafka and no sidecar service (scope: `AGENTS.md`, this plan).
 
 ## Architecture
 
@@ -97,7 +97,7 @@ every variable has a safe local default (see [.env.example](.env.example)).
 ### 1. Start the database
 
 ```bash
-docker compose up -d db
+DB_PORT=5433 docker compose up -d db
 ```
 
 `docker compose ps` then shows the container as healthy:
@@ -141,9 +141,10 @@ curl http://localhost:8080/actuator/health
 {"groups":["liveness","readiness"],"status":"UP"}
 ```
 
-`/actuator/health` is public (compose-style health checks); every other path requires the
-static `X-API-Key` header (see [Authentication](#authentication)). With the `local` profile
-the key has the safe default `local-dev-key` — see [API](#api) below for the first POST.
+`/actuator/health` is public (compose-style health checks), and so is the static demo page
+under `/demo/**` (no secrets — see [Demo](#demo)). Every API path requires the static
+`X-API-Key` header (see [Authentication](#authentication)). With the `local` profile the key
+has the safe default `local-dev-key` — see [API](#api) below for the first POST.
 
 ### 4. Stop
 
@@ -157,7 +158,8 @@ Both endpoints live under `/api/v1/events` and require the API key. Machine-read
 is served at `/v3/api-docs`, the UI at `/swagger-ui/index.html` — both **disabled by default**
 (D5); enable them with the dev profile, e.g.
 `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`. Documentation requires the API
-key like every other non-health endpoint.
+key like every other non-public endpoint — the only public paths are `/actuator/health/**`
+and the static demo page under `/demo/**`.
 
 > A plain browser visit of the Swagger UI cannot attach the `X-API-Key` header, so the UI
 > answers `401` and will not load. Open it through a header-capable client (a browser
@@ -215,11 +217,11 @@ HTTP/1.1 400
 {"detail":"Request validation failed","instance":"/api/v1/events","status":400,"title":"Bad Request","errors":[{"field":"eventId","message":"eventId must not be blank"},{"field":"occurredAt","message":"occurredAt must be a strict ISO-8601 date-time with a UTC offset (Z or +/-hh:mm) between 0001-01-01T00:00:00Z and 9999-12-31T23:59:59.999999Z, e.g. 2026-10-18T12:00:00Z"},{"field":"userId","message":"userId must not be blank"}]}
 ```
 
-Beyond Bean Validation, `400` also covers unreadable request parts: malformed JSON with an
-`errors` entry for the failing body, oversized or huge-exponent metadata numbers (bounded by a
-validator, `400` never `500`), NUL characters or numeric data PostgreSQL rejects (SQLState
-class 22, generic detail). Unexpected errors are a generic `500` Problem Details without
-internals; the server logs them.
+Beyond Bean Validation, `400` also covers unreadable request parts: malformed JSON returns a
+generic Problem Details detail (the `errors` extension is reserved for Bean Validation),
+oversized or huge-exponent metadata numbers are bounded by a validator (`400` never `500`), and
+NUL characters or numeric data PostgreSQL rejects (SQLState class 22) return a generic detail.
+Unexpected errors are a generic `500` Problem Details without internals; the server logs them.
 
 ### List events (GET)
 
@@ -257,10 +259,11 @@ curl -sS -H "X-API-Key: local-dev-key" \
 
 ## Authentication
 
-Every request except `/actuator/health/**` must carry the static API key in the
-`X-API-Key` header (decision [D5](docs/decisions.md)): a stateless Spring Security filter
-compares it against the configured key with a constant-time comparison (SHA-256 of both
-values, `MessageDigest.isEqual`).
+Every request except `/actuator/health/**` and the static demo page (`/demo/**`, see
+[Demo](#demo)) must carry the static API key in the `X-API-Key` header (decision
+[D5](docs/decisions.md)): a stateless Spring Security filter compares it against the
+configured key with a constant-time comparison (SHA-256 of both values,
+`MessageDigest.isEqual` — a code-level property, D14).
 
 - Configuration: `auditbox.security.api-key`, bound from the `API_KEY` environment
   variable (see [.env.example](.env.example)).
@@ -288,7 +291,7 @@ Three ways to exercise the behavior on a running stack. Start it first (same com
 [Getting started](#getting-started)):
 
 ```bash
-docker compose up -d db
+DB_PORT=5433 docker compose up -d db   # omit DB_PORT when 5432 is free
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
@@ -433,20 +436,21 @@ Run the whole suite (requires Docker for Testcontainers; no pre-started database
 ./mvnw verify
 ```
 
-The suite (JUnit 5 + Testcontainers against the pinned `postgres:18-alpine` image, real HTTP
-on a random port) covers, per class:
+The suite (JUnit 5; the integration classes use Testcontainers against the pinned
+`postgres:18-alpine` image and real HTTP on a random port, the rest are pure unit tests) covers,
+per class:
 
 | Test class | Covers |
 |---|---|
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
 | `EventsSchemaMigrationTest` | Flyway V1 applies on a clean database; columns, types, nullability, defaults, unique constraint (rejecting SQLState 23505), indexes (T2.1) |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
-| `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, OpenAPI, 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
+| `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI, 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
 | `EventCursorTest` | cursor codec unit tests: round trips and every strict rejection (T4.1/T4.2) |
-| `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries, constant-time rejects without allocations (D10/D12) |
-| `ApiKeySecurityTest` | 401/401/201 pattern, key echo, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
-| `ApiKeyMatcherTest` | constant-time matcher unit rules incl. whitespace handling (T5.1) |
+| `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries (D10/D12; rejection is allocation-free by design — a code-level property, not a timing test) |
+| `ApiKeySecurityTest` | 401/401/201 pattern, key echo, duplicate-header first-value, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
+| `ApiKeyMatcherTest` | matcher unit rules: equality, null/blank, whitespace handling (T5.1; constant-time is a code-level property, D14) |
 | `ApiKeyProdRequirementTest` | prod fail-fast: missing/blank/whitespace key, success with a key (T5.1) |
 | `SampleEventClientTest` | demo client: config parsing, base-url validation, exit codes, eventId scheme, payload determinism (T6.1) |
 | `DemoStaticPageTest` | demo page is public, contains the expected elements, embeds no secrets; the events API stays key-protected (T6.2) |

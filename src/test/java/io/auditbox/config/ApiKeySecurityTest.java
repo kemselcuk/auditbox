@@ -200,6 +200,18 @@ class ApiKeySecurityTest {
 		assertThat(response.statusCode()).isEqualTo(401);
 	}
 
+	@Test
+	void duplicateApiKeyHeadersUseTheFirstValue() throws Exception {
+		// Exactly one X-API-Key header is expected; when a proxy emits the header twice the
+		// servlet request exposes the first value to the filter (README documents this,
+		// review round 6, F3).
+		HttpResponse<String> wrongFirst = getWithTwoKeys("wrong-first", API_KEY);
+		assertThat(wrongFirst.statusCode()).isEqualTo(401);
+
+		HttpResponse<String> correctFirst = getWithTwoKeys(API_KEY, "wrong-second");
+		assertThat(correctFirst.statusCode()).isEqualTo(200);
+	}
+
 	/**
 	 * Review round 4, F2: logout is disabled, so {@code /logout} without a key is answered
 	 * by the entry point (401) and not by the default {@code LogoutFilter}, which would 302
@@ -249,6 +261,15 @@ class ApiKeySecurityTest {
 	private HttpResponse<String> getWithKey(String pathAndQuery, String key) throws Exception {
 		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + pathAndQuery))
 				.header(ApiKeyAuthenticationFilter.HEADER, key)
+				.GET()
+				.build();
+		return client.send(request, HttpResponse.BodyHandlers.ofString());
+	}
+
+	private HttpResponse<String> getWithTwoKeys(String first, String second) throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/events"))
+				.header(ApiKeyAuthenticationFilter.HEADER, first)
+				.header(ApiKeyAuthenticationFilter.HEADER, second)
 				.GET()
 				.build();
 		return client.send(request, HttpResponse.BodyHandlers.ofString());

@@ -73,15 +73,15 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T7.1 | Acceptance criteria → test/evidence matrix in this file; gaps closed | `./mvnw verify` fully green; every criterion mapped to a test or demo evidence | in progress |
-| T7.2 | README: Overview, What this is / is not, Architecture, API examples, Decisions summary, Getting started, Demo (real outputs), Testing & evidence, Next steps | Orchestrator follows README literally on a clean checkout and succeeds; claims match evidence | in progress |
+| T7.1 | Acceptance criteria → test/evidence matrix in this file; gaps closed | `./mvnw verify` fully green; every criterion mapped to a test or demo evidence | done |
+| T7.2 | README: Overview, What this is / is not, Architecture, API examples, Decisions summary, Getting started, Demo (real outputs), Testing & evidence, Next steps | Orchestrator follows README literally on a clean checkout and succeeds; claims match evidence | done |
 
 ### Stage 8 — Independent final review and handoff
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T8.1 | Read-only full-diff and docs review round (DeepSeek V4.1 Flash) | Findings resolved or explicitly deferred with rationale | pending |
-| T8.2 | Final acceptance pass + cost report | Acceptance checklist with evidence; owner gives final acceptance | pending |
+| T8.1 | Read-only full-diff and docs review round (DeepSeek V4.1 Flash) | Findings resolved or explicitly deferred with rationale | in progress |
+| T8.2 | Final acceptance pass + cost report | Acceptance checklist with evidence; owner gives final acceptance | in progress |
 
 ## Acceptance evidence matrix
 
@@ -99,7 +99,7 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | Criterion | Evidence | Kind |
 |---|---|---|
 | T0.1 `AGENTS.md` English, commands accurate, committed | `AGENTS.md` itself (commands cross-checked against this README); repo is git-tracked at `main` | doc |
-| T0.2 plan/decisions English, scope matches approved plan, committed | `docs/plan.md`, `docs/decisions.md` (D1–D15); scope boundaries re-checked in the T7.1 audit (no Kafka/scope creep; no tamper-proof wording anywhere) | doc |
+| T0.2 plan/decisions English, scope matches approved plan, committed | `docs/plan.md`, `docs/decisions.md` (D1–D15); scope boundaries re-checked in the T7.1 audit (no Kafka/scope creep; no tamper-proof claims anywhere) | doc |
 
 ### Stage 1 — Skeleton and local run
 
@@ -108,7 +108,7 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | T1.1 Maven project, Boot 4.1.x, Java 21, required dependencies | `pom.xml` — `spring-boot-starter-parent` 4.1.1, `java.version` 21, all listed starters; dependency list resolves `hibernate-core 7.4.5.Final`, `spring-data-jpa 4.1.1`, Flyway/Testcontainers/springdoc per D9 | doc |
 | T1.1 `local`/`test` profiles exist | `application-local.yml`, `application-test.yml` (+ `application-dev.yml`, base `application.yml`) | doc |
 | T1.1 integration test boots the app against Testcontainers PostgreSQL and asserts `/actuator/health` UP | `AuditBoxApplicationTests.actuatorHealthIsUpAgainstRealPostgres` | test |
-| T1.1 `./mvnw verify` green with real output | latest full run in the T7.1 task report (209 tests after the two T7.1 gap-close tests); earlier: 207 at stage-6 sign-off | test |
+| T1.1 `./mvnw verify` green with real output | latest full run: 211 tests (209 after the T7.1 gap-close tests plus the two T7.2 sign-off tests); earlier: 207 at stage-6 sign-off | test |
 | T1.1 versions recorded in `decisions.md` | `docs/decisions.md` D9 | doc |
 | T1.2 `docker-compose.yml` valid (pinned image, healthcheck, volume) | `docker-compose.yml` (image `postgres:18-alpine`, healthcheck, named volume); `docker compose config` validated by the orchestrator in the stage-1 report | doc + live |
 | T1.2 README steps reproduce a working local run | README "Getting started" re-walked live by the orchestrator at stage 1; re-verified literally at T7.2 acceptance | live |
@@ -131,7 +131,7 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 
 | Criterion | Evidence | Kind |
 |---|---|---|
-| T3.1 DTO + Bean Validation → 400 Problem Details with field errors | `EventApiControllerTest.invalidRequestsReturn400ProblemDetailsWithFieldErrors` (9 parameterized cases naming the offending field); oversized/HIL-shaped metadata numbers: `oversizedNumberInMetadataReturns400Not500` + the boundary tests below | test |
+| T3.1 DTO + Bean Validation → 400 Problem Details with field errors | `EventApiControllerTest.invalidRequestsReturn400ProblemDetailsWithFieldErrors` (9 parameterized cases naming the offending field); malformed JSON generic detail: `malformedJsonReturns400ProblemDetailsWithAGenericDetail`; oversized/huge-exponent metadata numbers: `oversizedNumberInMetadataReturns400Not500` + the boundary tests below | test |
 | T3.1 201/200/409 status semantics | `EventApiControllerTest.newEventIsStoredAndReturnedWith201`, `identicalRetryReturns200WithTheStoredRecordAndKeepsSingleRow`, `sameEventIdWithDifferentContentReturns409WithExistingEvent` (6 content variants, `existingEvent` extension asserted against the stored row) | test |
 | T3.1 OpenAPI schema for the events path | `EventApiControllerTest.openApiDocsDescribeTheEventsPath` (summary, 200/201/400/409, `CreateEventRequest` required/bounds) | test |
 | T3.2 insert → catch unique violation → re-read → compare hash → 200 or 409 | the 200/409 tests above (with hash comparison in the 409 path) plus the equivalent-form replay (`occurredAt` offset, key order, `1.00`) in `identicalRetryReturns200WithTheStoredRecordAndKeepsSingleRow` | test |
@@ -155,16 +155,17 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | T4.2 malformed cursor → 400 (incl. all strict decoder rejections) | `EventListApiControllerTest.invalidQueryParametersReturn400ProblemDetails` (15 parameterized query cases) + `EventCursorTest.emptyCursorIsRejected` … `oversizedCursorIsRejected` (13 decode-rejection tests) | test |
 | T4.2 invalid date range → 400, out-of-range bounds named | `invalidQueryParametersReturn400ProblemDetails` (occurredFrom/occurredTo cases), `occurredBoundsOutsideTheSupportedRangeAre400NamingTheParameter`, `cursorOccurredAtOutsideTheSupportedRangeIs400NamingTheParameter`; write-side twin: `EventApiControllerTest.occurredAtAtTheSupportedRangeBoundsIsAcceptedAndReplays`, `invalidRequestsReturn400ProblemDetailsWithFieldErrors` (range cases) | test |
 | T4.2 OpenAPI parameter docs | `EventListApiControllerTest.openApiDocsDescribeTheListEndpoint` (all 7 parameters, 200/400, `EventPage`) | test |
+| T4.2 documented in README | README §API → List events (GET): filters, cursor/nextCursor walk, error behaviour | doc |
 
 ### Stage 5 — X-API-Key security
 
 | Criterion | Evidence | Kind |
 |---|---|---|
 | T5.1 missing/wrong key → 401 Problem Details, `WWW-Authenticate`, no key echo, nothing stored | `ApiKeySecurityTest.missingApiKeyIsRejectedWithProblemDetails401`, `wrongApiKeyIsRejectedWith401WithoutEchoingTheSubmittedKey` (wrong-key POST writes nothing) | test |
-| T5.1 correct key → 201 write / 200 read (case-insensitive header) | `ApiKeySecurityTest.correctApiKeyAllowsWriteAndRead`, `lowerCaseHeaderNameAuthenticatesTheSameWay` | test |
-| T5.1 constant-time comparison, null/blank/whitespace rules | `ApiKeyMatcherTest` (all 6 methods: equal/different, null/blank both sides, configured-side strip) | test |
+| T5.1 correct key → 201 write / 200 read (case-insensitive header) | `ApiKeySecurityTest.correctApiKeyAllowsWriteAndRead`, `lowerCaseHeaderNameAuthenticatesTheSameWay`, `duplicateApiKeyHeadersUseTheFirstValue` | test |
+| T5.1 constant-time comparison, null/blank/whitespace rules | `ApiKeyMatcherTest` (all 6 methods: equal/different, null/blank both sides, configured-side strip) | test (semantics only; constant-time is a code-level property, D14) |
 | T5.1 `prod` fails fast without a key | `ApiKeyProdRequirementTest.prodStartupFailsWithoutApiKey`, `prodStartupFailsWithBlankApiKey`, `prodStartupFailsWithWhitespaceOnlyApiKey`, `prodStartupSucceedsWithConfiguredApiKey` | test |
-| T5.1 health public; every other path requires the key | `ApiKeySecurityTest.actuatorHealthIsPublicWithoutApiKey`, `otherActuatorPathRequiresApiKey`, `apiDocsWithoutApiKeyIsRejectedWhileEnabledInTest`, `unknownPathWithoutKeyIsStillRejected` | test |
+| T5.1 health and the static demo page (`/demo/**`) public; every API/actuator/docs path requires the key | `ApiKeySecurityTest.actuatorHealthIsPublicWithoutApiKey`, `otherActuatorPathRequiresApiKey`, `apiDocsWithoutApiKeyIsRejectedWhileEnabledInTest`, `unknownPathWithoutKeyIsStillRejected`; the demo-page exception: `DemoStaticPageTest.demoPageIsServedWithoutApiKeyAndContainsTheExpectedElements` | test |
 | T5.1 authenticated non-auth errors stay 404/405 (not 401); `/logout` answers 401 | `ApiKeySecurityTest.authenticatedRequestToUnknownPathReturns404NotAuthError`, `authenticatedUnsupportedMethodReturns405NotAuthError`, `logoutWithoutApiKeyReturns401Not302` | test |
 | T5.1 Swagger/OpenAPI dev-profile-only; OpenAPI security scheme present | `ApiKeySecurityTest.openApiDocumentDeclaresApiKeySecurityScheme`; dev-profile enablement is configuration (`application-dev.yml`, base disables springdoc) — configuration review + stage-5 live probes | test + doc + live |
 | T5.1 README "Authentication" | README §Authentication (this README) | doc |
@@ -187,7 +188,7 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | Stable keyset pagination | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates`, `cursorWalkIgnoresAnEventInsertedBetweenPages`, one-SELECT/no-COUNT + LIMIT tests | test |
 | Simple service auth (D5) | `ApiKeySecurityTest` (12), `ApiKeyMatcherTest` (6), `ApiKeyProdRequirementTest` (4) | test |
 | OpenAPI per contract | `openApiDocsDescribeTheEventsPath`, `openApiDocsDescribeTheListEndpoint`, `openApiDocumentDeclaresApiKeySecurityScheme` | test |
-| Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 209 tests (T7.1 report); runs require only Docker (Testcontainers), not a pre-started database | test |
+| Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 211 tests (T7.2 sign-off); runs require only Docker (Testcontainers), not a pre-started database | test |
 | Demo | three demo paths + README transcripts/screenshot (stage 6 rows above) | test + live |
 | README evidence (T7.2) | this README (Getting started, API with captured responses, Authentication, Demo transcripts/screenshot, Testing & evidence pointing here); orchestrator follows it literally on a clean checkout | doc + live |
 
@@ -265,3 +266,10 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
   evidence (4 back-to-back + 2 overlapping script runs, client exit codes 2/1/1, page
   filter-snapshot behaviour), 207 tests green; two cosmetic script notes folded into this
   sign-off commit. **Stage 6 signed off.**
+- **Round 6** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 7): verdict **"sound with minor
+  issues"** — no blocker; F1 (major, docs): the "health-only public" wording ignored the
+  intentionally public static demo page `/demo/**`; F2–F5: malformed-JSON error shape, an
+  unevidenced duplicate-header claim, the unexplained "OTAP" sentence and a missing T4.2 matrix
+  row; F6–F9 nits (DB_PORT in step 1, wording, evidence labels). All closed: README/D14/matrix
+  corrections, a malformed-JSON test and a duplicate-header test (211 tests). **Stage 7 signed
+  off.**

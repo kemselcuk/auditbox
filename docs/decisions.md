@@ -306,3 +306,9 @@ decision → rationale/alternatives.
 - Round 5b sign-off (2026-10-18): verdict **"sound"**; two cosmetic script notes (raw curl/psql
   stderr on preflight failures) were fixed in the sign-off commit, so failures print only the
   prepared messages. **Stage 6 signed off.**
+- Review round 6 (2026-10-18, all findings closed): the "health-only public" wording was
+  qualified — the static demo page under `/demo/**` is the only other public path (it carries no
+  secrets and every API call it makes still passes the key check; `DemoStaticPageTest`); the
+  malformed-JSON error shape is now described as a generic detail, with a new integration test;
+  the duplicate-header behavior gained a test (first value wins); the README's OTAP sentence and
+  the evidence wording were corrected (F1-F9).
