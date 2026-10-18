@@ -27,6 +27,9 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  *   <li>400 for Bean Validation failures — with a field-level {@code errors} extension — and
  *       for unreadable or malformed bodies (broken JSON, wrong types, oversized number
  *       literals),</li>
+ *   <li>400 for invalid list query parameters (T4.1) via {@link InvalidEventQueryException}:
+ *       a malformed cursor, a non-ISO-8601 occurredFrom/occurredTo, an inverted date range
+ *       or a page size outside 1..100 — the violation is the detail,</li>
  *   <li>409 for a duplicate eventId with different content, carrying the stored record in the
  *       {@code existingEvent} extension in exactly the shape of a success response (D4),</li>
  *   <li>400 for request content PostgreSQL rejects as a "data exception" (SQLState class 22,
@@ -83,6 +86,19 @@ public class EventApiExceptionHandler extends ResponseEntityExceptionHandler {
 				"Malformed or unreadable request body");
 		problem.setTitle("Bad Request");
 		return handleExceptionInternal(ex, problem, headers, HttpStatus.BAD_REQUEST, request);
+	}
+
+	/**
+	 * Invalid list query parameters (T4.1): a malformed cursor, a non-ISO-8601
+	 * occurredFrom/occurredTo, an inverted date range or a page size outside 1..100 —
+	 * 400 Problem Details with the violation as the detail. No {@code errors} extension:
+	 * that shape is reserved for the Bean Validation failures of a request body.
+	 */
+	@ExceptionHandler(InvalidEventQueryException.class)
+	public ResponseEntity<Object> handleInvalidEventQuery(InvalidEventQueryException ex) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+		problem.setTitle("Bad Request");
+		return ResponseEntity.badRequest().body(problem);
 	}
 
 	/**
