@@ -295,3 +295,11 @@ decision → rationale/alternatives.
 - Evidence: 201 tests (3 static-page tests + client unit tests); live client run 5×201 then
   5×200; script 4/4 PASS; real screenshot `docs/images/demo.png` (headless Chrome, local profile)
   and real transcripts in the README.
+- Review round 5 (2026-10-18, all findings closed): the dedupe script's run id is per-process
+  (`<epoch>-<pid>`), so back-to-back runs cannot collide (F1); the client validates `--base-url`,
+  normalizes trailing slashes, prints non-null failure text, and exits 1 on connection failures
+  or any status ≥ 400 (F2–F5); the script preflights the DB capability before any write and no
+  longer prints the key length (F6–F8); the page snapshots the filter query for cursor walks,
+  resets the cursor on filter edits and uses a random fallback eventId (F10–F11); README notes
+  updated (F9, F12). Evidence: 207 tests; four back-to-back script runs all exit 0 with
+  1×201 + 9×200 and one row; client error paths (exit 2/1/1) verified live.
