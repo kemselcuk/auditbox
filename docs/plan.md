@@ -45,15 +45,15 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T3.1 | DTO + Bean Validation; 201/200/409 semantics; Problem Details error model with field errors; OpenAPI schema | Validation tests green (400 on bad payload with field details) | in progress |
-| T3.2 | Insert → catch unique violation → re-read → compare hash → 200 or 409 (with stored record summary) | Integration tests on real PostgreSQL: new → 201; identical repeat → 200 and exactly one row; different content → 409 with detail; **N concurrent identical requests → exactly one row, responses only {1×201, rest 200}, no 5xx**; concurrent different content → 1×201 + 1×409 | in progress |
+| T3.1 | DTO + Bean Validation; 201/200/409 semantics; Problem Details error model with field errors; OpenAPI schema | Validation tests green (400 on bad payload with field details) | done |
+| T3.2 | Insert → catch unique violation → re-read → compare hash → 200 or 409 (with stored record summary) | Integration tests on real PostgreSQL: new → 201; identical repeat → 200 and exactly one row; different content → 409 with detail; **N concurrent identical requests → exactly one row, responses only {1×201, rest 200}, no 5xx**; concurrent different content → 1×201 + 1×409 | done |
 
 ### Stage 4 — GET /api/v1/events (filters + keyset pagination)
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T4.1 | Filters `userId`, `eventType`, `source`, `occurredAt` from/to; order `occurred_at DESC, event_id DESC`; opaque base64 cursor; default 20 / max 100; `nextCursor` only when more results exist | Filter combination tests green; **pagination walk test: full dataset traversed with no duplicates or gaps, including rows sharing the same `occurred_at`**; walk stays stable while a new event is inserted | pending |
-| T4.2 | Malformed cursor → 400; invalid date range → 400; OpenAPI parameter docs | Negative tests green; documented in README | pending |
+| T4.1 | Filters `userId`, `eventType`, `source`, `occurredAt` from/to; order `occurred_at DESC, event_id DESC`; opaque base64 cursor; default 20 / max 100; `nextCursor` only when more results exist | Filter combination tests green; **pagination walk test: full dataset traversed with no duplicates or gaps, including rows sharing the same `occurred_at`**; walk stays stable while a new event is inserted | in progress |
+| T4.2 | Malformed cursor → 400; invalid date range → 400; OpenAPI parameter docs | Negative tests green; documented in README | in progress |
 
 ### Stage 5 — X-API-Key security
 
@@ -97,3 +97,16 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
   (30 tests green, verified by the orchestrator), F6–F9 in `0374c5f`, F10 documented in D11. Two
   forward-looking notes were accepted into Stage 3: the insert must run in its own transaction
   boundary, and oversized metadata numbers must map to 400.
+- **Round 2** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 3): verdict **"not sound"**.
+  F1 accepted metadata numbers (`1e1000`) became unreadable (500 on replay); F2 unbounded exponent
+  (OOM/DoS); F3 client SQL data errors returned 500; F4 201/200 numeric rendering mismatch; F5
+  DB read-path precision unasserted; F6–F9 docs/nits. Fixes `0247667`, `a724dbf`.
+- **Round 2b** (2026-10-18, Stage 3 fixes): verdict **"not sound"**. B1 trailing-zero scale above
+  the 4096 read limit (500 on insert); B2 int overflow in digit arithmetic (OOM/500). Fixes
+  `39481cd`, `07895d2`.
+- **Round 2c** (2026-10-18, B1/B2 fixes): verdict **"not sound"**. F1 residual:
+  `stripTrailingZeros` overflow (`100e2147483647` → 500); F2/F3 wording; F4 stale README; F5
+  negative boundary untested. Fixes `bf13ddc`, `9f584a8`.
+- **Round 2d** (2026-10-18, sign-off): verdict **"sound with minor issues"** (docs-only wording
+  residuals; optional nits). Fixed in `93c5c84`; F1 totality proven (299 live/programmatic checks,
+  3343-value guard cross-check); 108 tests green (orchestrator-run). **Stage 3 signed off.**
