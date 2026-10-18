@@ -274,3 +274,24 @@ decision → rationale/alternatives.
   prod (F3); the README notes the Swagger UI needs a header-capable client (F4). Tests pin
   `WWW-Authenticate`, no echo of the submitted key, header case-insensitivity, exactly-one-header
   note, and that a wrong-key write stores nothing (187 tests total).
+
+## D15 — Demo package (T6.1–T6.3)
+
+- Decision: three demo paths, all reproducible from the README:
+  - `io.auditbox.demo.SampleEventClient` — JDK-only client (`java -cp target/classes
+    io.auditbox.demo.SampleEventClient`), flags `--base-url`/`--api-key`/`--count`/`--batch`;
+    eventIds are `demo-<batch>-<i>` and payloads depend only on `(batch, i)`, so re-running a
+    batch replays identical content (first run 201s, replay 200s).
+  - Static single-page browser demo at `/demo/index.html` — vanilla HTML+JS, no build step; the
+    visitor pastes the `X-API-Key` into the page and every API call still goes through the same
+    filter chain. The page itself is public (`/demo/**` permitAll) and contains no secrets; the
+    events API stays key-protected.
+  - `scripts/dedupe-demo.sh` — deterministic four-scenario dedupe evidence (N parallel identical
+    POSTs → 1×201 + (N−1)×200 and one row; identical retry → 200; different content → 409 with
+    `existingEvent`; fresh read shows the single row). Exits non-zero on any failed expectation;
+    configurable via `BASE_URL`, `API_KEY`, `DB_PORT`, `CONCURRENCY`.
+- Rationale: the demo must be reproducible with zero extra infrastructure and must not soften
+  the security model (the API key is still required for every API call).
+- Evidence: 201 tests (3 static-page tests + client unit tests); live client run 5×201 then
+  5×200; script 4/4 PASS; real screenshot `docs/images/demo.png` (headless Chrome, local profile)
+  and real transcripts in the README.
