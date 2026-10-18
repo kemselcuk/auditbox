@@ -266,3 +266,10 @@ decision → rationale/alternatives.
 - Evidence: 182 tests (10 security, 5 matcher, 3 prod-requirement); live: 401 without/wrong key
   (Problem Details + `WWW-Authenticate`), 200 GET / 201 POST with the key, health public, other
   actuator 401, docs 401 without a key, unknown path 404 and PUT 405 with a key (not 401).
+- Review round 4 (2026-10-18, all findings closed): raw invalid percent-escapes in the query
+  string now return 400 (Tomcat `InvalidParameterException` handler, F1); logout is disabled —
+  without it the default `LogoutFilter` answered `/logout` with a 302 before authorization (F2);
+  the configured key is stripped before comparison and a whitespace-only key fails startup in
+  prod (F3); the README notes the Swagger UI needs a header-capable client (F4). Tests pin
+  `WWW-Authenticate`, no echo of the submitted key, header case-insensitivity, exactly-one-header
+  note, and that a wrong-key write stores nothing (187 tests total).
