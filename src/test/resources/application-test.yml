@@ -2,6 +2,13 @@
 # credentials are provided by @ServiceConnection at runtime. The entries below make the
 # configuration choices explicit and independent of base-file defaults.
 spring:
+  security:
+    user:
+      # Temporary basic-auth credentials for the Stage 3 integration tests (the temporary
+      # security chain in TemporarySecurityConfiguration requires them). Stage 5 replaces
+      # this whole mechanism with the X-API-Key filter (D5).
+      name: test-user
+      password: test-password
   flyway:
     enabled: true
   jpa:

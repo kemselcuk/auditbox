@@ -5,6 +5,12 @@ spring:
     name: auditbox
   flyway:
     enabled: true
+  jackson:
+    deserialization:
+      # Exact client decimals (D10): JSON floats are read as BigDecimal so high-precision
+      # values survive request parsing end to end (1.00000000000000000001 != 1). Hibernate's
+      # jsonb read path needs the same feature: see JsonFormatMapperConfiguration.
+      use-big-decimal-for-floats: true
   jpa:
     # The database schema is owned by Flyway migrations (from Stage 2 on); Hibernate only
     # validates. With no entities in Stage 1, validate is a no-op against the empty schema
