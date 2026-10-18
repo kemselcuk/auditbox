@@ -171,7 +171,137 @@ curl -sS -H "X-API-Key: local-dev-key" \
 
 ## Demo
 
-Placeholder — filled in Stage 6 (sample-event client, single-page web demo, dedupe script).
+Three ways to exercise the behavior on a running stack. Start it first (same commands as
+[Getting started](#getting-started)):
+
+```bash
+docker compose up -d db
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+### 1. Sample-event client (T6.1)
+
+A small standalone Java client using only the JDK (`java.net.http.HttpClient`, hand-built
+JSON — no extra dependencies). Flags: `--base-url` (default `http://localhost:8080`),
+`--api-key` (default `local-dev-key`), `--count` (default 20), `--batch` (default: a UTC
+timestamp; eventIds are `demo-<batch>-<i>`). Re-running with the same `--batch` replays
+identical content, so the second run comes back wrapped with idempotent `200`s (D4):
+
+```bash
+./mvnw compile
+java -cp target/classes io.auditbox.demo.SampleEventClient --count=6 --batch=run-1
+java -cp target/classes io.auditbox.demo.SampleEventClient --count=6 --batch=run-1
+```
+
+Real output of the first (fresh) run and the second (same batch) run:
+
+```text
+AuditBox sample-event client
+  base-url : http://localhost:8080
+  batch    : run-1
+  count    : 6
+
+  [201] demo-run-1-0
+  [201] demo-run-1-1
+  [201] demo-run-1-2
+  [201] demo-run-1-3
+  [201] demo-run-1-4
+  [201] demo-run-1-5
+
+Summary
+  events sent : 6 of 6
+  HTTP 201: 6
+  eventIds    : demo-run-1-0, demo-run-1-1, demo-run-1-2, demo-run-1-3, demo-run-1-4, demo-run-1-5
+```
+
+```text
+AuditBox sample-event client
+  base-url : http://localhost:8080
+  batch    : run-1
+  count    : 6
+
+  [200] demo-run-1-0
+  [200] demo-run-1-1
+  [200] demo-run-1-2
+  [200] demo-run-1-3
+  [200] demo-run-1-4
+  [200] demo-run-1-5
+
+Summary
+  events sent : 6 of 6
+  HTTP 200: 6
+  eventIds    : demo-run-1-0, demo-run-1-1, demo-run-1-2, demo-run-1-3, demo-run-1-4, demo-run-1-5
+```
+
+The second run is the idempotent replay (same eventIds, identical content → `200`, D4).
+
+### 2. Browser demo (T6.2)
+
+Open <http://localhost:8080/demo/index.html> in a browser. The page itself is public
+(no key needed to load it); paste the API key into the key input and every API call from
+the page carries it as the `X-API-Key` header. The page offers filter fields (`userId`,
+`eventType`, `source`, `occurredFrom`, `occurredTo`, `size`), a "Send sample event" form, a
+results table with `id`/`eventId`/`userId`/`eventType`/`source`/`occurredAt`/`receivedAt`/
+`metadata` and a "Load more" button walking the keyset cursor. Errors render as the
+RFC 9457 Problem Details they really are (401 without a key, 409 conflicts with the
+`existingEvent` extension, 400 field errors).
+
+![AuditBox demo page: API key input, filters, a table of loaded events and the nextCursor badge](docs/images/demo.png)
+
+The screenshot is a real run (headless Chrome against the local profile): the key was pasted,
+"Load first page" fetched the newest 20 events and the page reports `nextCursor available`.
+
+### 3. Dedupe script (T6.3)
+
+One command reproducing the D4 concurrency behavior end to end — N parallel identical
+POSTs (default 10: exactly one `201`, the rest `200`, exactly one DB row), an identical
+retry (`200`), different content on the same eventId (`409` with the `existingEvent`
+extension) and a fresh read page showing the single row. Exits non-zero on any failed
+expectation; configure with `BASE_URL`, `API_KEY`, `DB_PORT`, `CONCURRENCY`:
+
+```bash
+./scripts/dedupe-demo.sh
+```
+
+```text
+AuditBox dedupe demo
+  BASE_URL    : http://localhost:8080
+  API key     : set (13 characters, not echoed back)
+  DB container: auditbox-db (DB host port: 5432)
+  Concurrency : 10
+  eventId     : dedupe-demo-1792357305   userId: dedupe-demo-1792357305-user   occurredAt: 2026-10-18T21:01:45Z
+
+== Scenario 1: 10 parallel identical POSTs for the fresh eventId ==
+  status distribution: 1x201 (created) + 9x200 (idempotent) + 0 unexpected
+  rows in 'events' for the eventId: 1 (expected 1)
+  [PASS] one writer, N identical retries: only one row and exactly one 201
+
+== Scenario 2: identical retry of the same payload ==
+  status: 200 (expected 200)
+  [PASS] same eventId + identical content -> idempotent 200
+
+== Scenario 3: same eventId with different content ==
+  status: 409 (expected 409)
+  response body contains the existingEvent extension:
+{"detail":"an event with eventId 'dedupe-demo-1792357305' already exists with different content",
+"instance":"/api/v1/events","status":409,"title":"Conflict","existingEvent":{"id":259,
+"eventId":"dedupe-demo-1792357305","userId":"dedupe-demo-1792357305-user","eventType":"payment.settled",
+"source":"dedupe-demo","occurredAt":"2026-10-18T21:01:45Z","metadata":null,
+"receivedAt":"2026-10-18T21:01:45.813629Z"}}
+
+  rows in 'events' for the eventId after the conflict: 1 (expected 1)
+  [PASS] first writer wins; different content is a 409, not an overwrite
+
+== Scenario 4: fresh read page for the demo user ==
+  status: 200 (expected 200)
+  read page contains the eventId 1 time(s) (expected exactly 1)
+  [PASS] the page returns exactly the one stored row and no cursor
+
+ALL CHECKS PASSED (4 scenarios): idempotency behavior (D4) reproduced end to end
+```
+
+(The transcript above is a real run with two long JSON lines re-wrapped for readability;
+your own run reproduces the same shape with a fresh eventId.)
 
 ## Testing
 

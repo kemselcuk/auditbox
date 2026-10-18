@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AuditBox demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 0 1rem 3rem; max-width: 68rem; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 1.8rem; }
+  section { border: 1px solid #ccc4; border-radius: .5rem; padding: .5rem 1rem 1rem; margin-top: 1rem; }
+  label { display: inline-block; min-width: 7rem; font-size: .85rem; color: #667; }
+  input, textarea { border: 1px solid #9996; border-radius: .25rem; padding: .25rem .4rem; font: inherit; }
+  input[type="text"] { width: 16rem; } input.wide { width: 24rem; } input.short { width: 5rem; }
+  textarea { width: 100%; min-height: 3.5rem; font-family: ui-monospace, monospace; box-sizing: border-box; }
+  button { font: inherit; padding: .3rem .8rem; border-radius: .25rem; border: 1px solid #9996; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .filters { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: center; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; margin-top: .6rem; }
+  th, td { border-bottom: 1px solid #ccc3; text-align: left; padding: .3rem .5rem; vertical-align: top; }
+  th { border-bottom-width: 2px; }
+  td.mono, code { font-family: ui-monospace, monospace; }
+  .badge { display: inline-block; border-radius: .75rem; padding: .05rem .55rem; font-size: .75rem;
+           color: #fff; background: #888c; white-space: nowrap; }
+  .badge.ok { background: #2e7d32; } .badge.info { background: #1565c0; }
+  .badge.warn { background: #ef6c00; } .badge.error { background: #c62828; }
+  .muted { color: #889; font-size: .8rem; }
+  .error { display: none; border: 1px solid #c62828; border-radius: .35rem; padding: .5rem .8rem;
+           margin-top: .75rem; background: #c6282811; }
+  pre { overflow: auto; font-size: .78rem; margin: .4rem 0; padding: .5rem;
+        background: #8881; border-radius: .35rem; }
+  .send-form { display: grid; grid-template-columns: max-content 1fr; gap: .4rem .6rem; max-width: 42rem; }
+  .send-form label { align-self: center; }
+  .send-form .full { grid-column: 1 / 3; }
+  #send-result { margin-top: .6rem; }
+</style>
+</head>
+<body>
+<h1>AuditBox demo</h1>
+<p class="muted">
+  Vanilla single-page demo served by AuditBox itself (plan T6.2). The page is static and carries
+  no secrets: paste the <code>X-API-Key</code> value below — every API call sends it as the
+  <code>X-API-Key</code> header. The local development default key is documented in the README.
+</p>
+
+<section>
+  <h2>API key</h2>
+  <label for="api-key">X-API-Key</label>
+  <input type="text" id="api-key" autocomplete="off" spellcheck="false"
+         placeholder="paste the API key here">
+</section>
+
+<section>
+  <h2>List events</h2>
+  <div class="filters">
+    <label for="f-user-id">userId</label>
+    <input type="text" id="f-user-id" spellcheck="false">
+    <label for="f-event-type">eventType</label>
+    <input type="text" id="f-event-type" spellcheck="false">
+    <label for="f-source">source</label>
+    <input type="text" id="f-source" spellcheck="false">
+    <label for="f-occurred-from">occurredFrom</label>
+    <input type="text" id="f-occurred-from" class="short" spellcheck="false"
+           placeholder="2026-10-18T00:00:00Z">
+    <label for="f-occurred-to">occurredTo</label>
+    <input type="text" id="f-occurred-to" class="short" spellcheck="false"
+           placeholder="2026-10-18T23:59:59Z">
+    <label for="f-size">size</label>
+    <input type="text" id="f-size" class="short" value="20">
+    <button id="load-events">Load first page</button>
+    <button id="load-more" disabled>Load more</button>
+    <span id="list-status"></span>
+  </div>
+  <div class="error" id="error-box">
+    <strong id="error-title"></strong> <span id="error-status"></span>
+    <div id="error-detail" class="muted"></div>
+    <pre id="error-body"></pre>
+  </div>
+  <table id="results" aria-label="Events">
+    <thead>
+      <tr>
+        <th>id</th><th>eventId</th><th>userId</th><th>eventType</th><th>source</th>
+        <th>occurredAt</th><th>receivedAt</th><th>metadata</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Send sample event</h2>
+  <form id="send-event" class="send-form">
+    <label for="s-event-id">eventId</label>
+    <input type="text" id="s-event-id" class="wide" spellcheck="false"
+           placeholder="client-generated, unique per event (pre-filled with a fresh UUID)">
+    <label for="s-user-id">userId</label>
+    <input type="text" id="s-user-id" value="demo-user-0">
+    <label for="s-event-type">eventType</label>
+    <input type="text" id="s-event-type" value="payment.settled">
+    <label for="s-source">source</label>
+    <input type="text" id="s-source" value="core-banking">
+    <label for="s-occurred-at">occurredAt</label>
+    <input type="text" id="s-occurred-at" class="wide" spellcheck="false">
+    <label for="s-metadata">metadata (JSON)</label>
+    <input type="text" id="s-metadata" class="wide" spellcheck="false"
+           placeholder='{"amount":12.50,"currency":"EUR"} (optional)'>
+    <div class="full"><button type="submit" id="send-button">POST /api/v1/events</button></div>
+  </form>
+  <div id="send-result"></div>
+  <pre id="send-response" style="display:none"></pre>
+</section>
+
+<script>
+"use strict";
+
+const state = { nextCursor: null };
+
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function badge(code) {
+  const kind = code === 201 ? "ok" : code === 200 ? "info" : code === 409 ? "warn" : "error";
+  return '<span class="badge ' + kind + '">' + code + "</span>";
+}
+
+function clearError() {
+  $("error-box").style.display = "none";
+  $("error-body").textContent = "";
+}
+
+/** Renders any RFC 9457 Problem Details body (401/400/409/...). */
+function showError(problem) {
+  $("error-title").textContent = problem.title ? problem.title + " —" : "Error —";
+  $("error-status").textContent = "HTTP " + (problem.status || "");
+  $("error-detail").textContent =
+    (problem.detail || "") +
+    (problem.existingEvent
+      ? " (existing event: eventId " + problem.existingEvent.eventId
+        + ", id " + problem.existingEvent.id + ")"
+      : "");
+  const errors = problem.errors;
+  $("error-body").textContent = Array.isArray(errors)
+    ? errors.map((e) => e.field + ": " + e.message).join("\n")
+    : "";
+  $("error-box").style.display = "block";
+}
+
+async function call(path, options) {
+  const headers = { "Accept": "application/json" };
+  const key = $("api-key").value.trim();
+  if (key !== "") { headers["X-API-Key"] = key; }
+  if (options && options.body !== undefined) { headers["Content-Type"] = "application/json"; }
+  return fetch(path, Object.assign({}, options, { headers }));
+}
+
+/** Fetch with Problem Details rendering; returns {ok, status, data} or null (no response body). */
+async function callAndShowProblem(path, options) {
+  let response;
+  try {
+    response = await call(path, options);
+  } catch (err) {
+    showError({ title: "Request failed", detail: String(err) });
+    return null;
+  }
+  let data = null;
+  try { data = await response.json(); } catch (err) { /* empty or non-JSON body */ }
+  if (!response.ok) {
+    showError(data || { title: "HTTP " + response.status, detail: "(no response body)" });
+    return { ok: false, status: response.status, data: data };
+  }
+  clearError();
+  return { ok: true, status: response.status, data: data };
+}
+
+function renderEvent(item) {
+  return "<tr>"
+    + "<td>" + escapeHtml(item.id) + "</td>"
+    + '<td class="mono">' + escapeHtml(item.eventId) + "</td>"
+    + "<td>" + escapeHtml(item.userId) + "</td>"
+    + "<td>" + escapeHtml(item.eventType) + "</td>"
+    + "<td>" + escapeHtml(item.source) + "</td>"
+    + '<td class="mono">' + escapeHtml(item.occurredAt) + "</td>"
+    + '<td class="mono muted">' + escapeHtml(item.receivedAt) + "</td>"
+    + '<td class="mono">' + (item.metadata == null ? "&mdash;" : escapeHtml(JSON.stringify(item.metadata))) + "</td>"
+    + "</tr>";
+}
+
+function renderPage(page, append) {
+  const tbody = $("rows");
+  if (!append) { tbody.innerHTML = ""; }
+  tbody.insertAdjacentHTML("beforeend", page.items.map(renderEvent).join(""));
+  state.nextCursor = page.nextCursor || null;
+  $("load-more").disabled = state.nextCursor == null;
+  $("list-status").innerHTML =
+    badge(200) + " " + tbody.rows.length + " event(s)"
+    + (state.nextCursor ? ' <span class="muted">— nextCursor available</span>' : "");
+}
+
+function listPath(useCursor) {
+  const params = new URLSearchParams();
+  const add = (name, id) => {
+    const value = $(id).value.trim();
+    if (value !== "") { params.set(name, value); }
+  };
+  add("userId", "f-user-id");
+  add("eventType", "f-event-type");
+  add("source", "f-source");
+  add("occurredFrom", "f-occurred-from");
+  add("occurredTo", "f-occurred-to");
+  add("size", "f-size");
+  if (useCursor && state.nextCursor != null) { params.set("cursor", state.nextCursor); }
+  return "/api/v1/events?" + params.toString();
+}
+
+async function loadEvents(useCursor) {
+  if (useCursor && state.nextCursor == null) { return; }
+  const result = await callAndShowProblem(listPath(useCursor), { method: "GET" });
+  if (result && result.ok) { renderPage(result.data, Boolean(useCursor)); }
+}
+
+async function sendEvent(event) {
+  event.preventDefault();
+  clearError();
+  $("send-result").innerHTML = "";
+  $("send-response").style.display = "none";
+
+  const body = {
+    eventId: $("s-event-id").value.trim() || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    userId: $("s-user-id").value.trim(),
+    eventType: $("s-event-type").value.trim(),
+    source: $("s-source").value.trim(),
+    occurredAt: $("s-occurred-at").value.trim(),
+  };
+  const metadataText = $("s-metadata").value.trim();
+  if (metadataText !== "") {
+    try { body.metadata = JSON.parse(metadataText); }
+    catch (err) { showError({ title: "Metadata is not valid JSON", status: 400, detail: String(err) }); return; }
+  }
+  $("s-event-id").value = body.eventId; // show the generated id back
+
+  const result = await callAndShowProblem("/api/v1/events", { method: "POST", body: JSON.stringify(body) });
+  if (result) {
+    const label = result.status === 201 ? "created"
+      : result.status === 200 ? "idempotent retry (stored record returned)"
+      : result.status === 409 ? "conflict (same eventId, different content)"
+      : "response";
+    $("send-result").innerHTML =
+      badge(result.status) + " " + label;
+    if (result.data) {
+      $("send-response").textContent = JSON.stringify(result.data, null, 2);
+      $("send-response").style.display = "block";
+    }
+  }
+}
+
+// Seed fields that only make sense with a per-session value.
+$("s-event-id").value = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+$("s-occurred-at").value = new Date().toISOString();
+
+$("load-events").addEventListener("click", () => loadEvents(false));
+$("load-more").addEventListener("click", () => loadEvents(true));
+$("send-event").addEventListener("submit", sendEvent);
+</script>
+</body>
+</html>

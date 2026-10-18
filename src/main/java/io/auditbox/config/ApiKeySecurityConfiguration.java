@@ -22,8 +22,12 @@ import jakarta.servlet.DispatcherType;
  *   <li>no CSRF (token-free API), no sessions ({@link SessionCreationPolicy#STATELESS}),
  *       no form login, no HTTP basic — the only authentication mechanism is the
  *       {@link ApiKeyAuthenticationFilter},</li>
- *   <li>{@code /actuator/health/**} (health + nested liveness/readiness probes) is public;
- *       everything else — the events API, every other actuator endpoint, and, when enabled,
+ *   <li>{@code /actuator/health/**} (health + nested liveness/readiness probes) and the static
+ *       single-page demo under {@code /demo/**} (plan task T6.2) are public. The demo page is
+ *       vanilla HTML and carries no secrets: it lets a human paste their {@code X-API-Key}
+ *       value into a form, but every API call it makes goes through this same filter chain —
+ *       the events API itself stays key-protected for the page's visitors too,</li>
+ *   <li>everything else — the events API, every other actuator endpoint, and, when enabled,
  *       {@code /v3/api-docs} and {@code /swagger-ui/**} — requires the key,</li>
  *   <li>missing or wrong key &rarr; 401 Problem Details via
  *       {@link ApiKeyAuthenticationEntryPoint},</li>
@@ -50,6 +54,8 @@ public class ApiKeySecurityConfiguration {
 				.authorizeHttpRequests(authorize -> authorize
 						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
 						.requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+						// Static single-page demo only — never the API (plan task T6.2).
+						.requestMatchers("/demo/**").permitAll()
 						.anyRequest().authenticated())
 				.addFilterBefore(new ApiKeyAuthenticationFilter(properties),
 						UsernamePasswordAuthenticationFilter.class)
