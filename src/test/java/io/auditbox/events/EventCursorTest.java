@@ -80,6 +80,20 @@ class EventCursorTest {
 	}
 
 	@Test
+	void roundTripsTheSupportedRangeBoundaries() {
+		// The write path enforces the same range (review round 3b, F-1), so every stored
+		// occurredAt is a position decode accepts; pin both ends.
+		for (String occurredAt : new String[] { "0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z" }) {
+			String cursor = EventCursor.encode(OffsetDateTime.parse(occurredAt), "event-1");
+
+			EventCursor.Position position = EventCursor.decode(cursor);
+
+			assertThat(position.occurredAt().toInstant()).isEqualTo(Instant.parse(occurredAt));
+			assertThat(position.eventId()).isEqualTo("event-1");
+		}
+	}
+
+	@Test
 	void emptyCursorIsRejected() {
 		assertThatThrownBy(() -> EventCursor.decode("")).isInstanceOf(InvalidEventQueryException.class);
 		assertThatThrownBy(() -> EventCursor.decode("  ")).isInstanceOf(InvalidEventQueryException.class);

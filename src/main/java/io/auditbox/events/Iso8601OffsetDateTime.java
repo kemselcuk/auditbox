@@ -25,7 +25,7 @@ import jakarta.validation.Payload;
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Iso8601OffsetDateTime {
 
-	String message() default "occurredAt must be a strict ISO-8601 date-time with a UTC offset (Z or +/-hh:mm), e.g. 2026-10-18T12:00:00Z";
+	String message() default "occurredAt must be a strict ISO-8601 date-time with a UTC offset (Z or +/-hh:mm) between 0001-01-01T00:00:00Z and 9999-12-31T23:59:59.999999Z, e.g. 2026-10-18T12:00:00Z";
 
 	Class<?>[] groups() default {};
 

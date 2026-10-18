@@ -24,10 +24,10 @@ import java.time.format.DateTimeParseException;
  * </ul>
  *
  * <p>The supported range of every date-time on the read path (bounds inclusive) is
- * {@value #SUPPORTED_RANGE_TEXT}: far below and above any real event clock, it nonetheless
- * bounds decode work and mirrors the unit-of-work range the database can represent. Values
- * outside it (e.g. {@code +999999999-...}) are rejected by name instead of reaching a
- * comparison or SQL error.
+ * {@link EventTimeRange#TEXT}: far below and above any real event clock, it bounds decode work
+ * and is the same range the write path enforces, so a stored event is always a position the
+ * cursor can encode and decode (review round 3b, F-1). Values outside it (e.g.
+ * {@code +999999999-...}) are rejected by name instead of reaching a comparison or SQL error.
  *
  * <p>All parameters are parsed manually instead of binding typed parameters (e.g.
  * {@code Integer} or {@code OffsetDateTime}): a framework conversion failure would surface
@@ -49,13 +49,13 @@ record EventListQuery(
 	static final int MAX_SIZE = 100;
 
 	/** Inclusive lower bound of the supported occurrence range (review round 3, F4). */
-	static final Instant MIN_SUPPORTED_INSTANT = Instant.parse("0001-01-01T00:00:00Z");
+	static final Instant MIN_SUPPORTED_INSTANT = EventTimeRange.MIN;
 
 	/** Inclusive upper bound of the supported occurrence range (review round 3, F4). */
-	static final Instant MAX_SUPPORTED_INSTANT = Instant.parse("9999-12-31T23:59:59.999999Z");
+	static final Instant MAX_SUPPORTED_INSTANT = EventTimeRange.MAX;
 
 	/** The supported range rendered for API messages and documentation. */
-	static final String SUPPORTED_RANGE_TEXT = "0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z";
+	static final String SUPPORTED_RANGE_TEXT = EventTimeRange.TEXT;
 
 	/**
 	 * Parses the raw query parameters; throws {@link InvalidEventQueryException} on the

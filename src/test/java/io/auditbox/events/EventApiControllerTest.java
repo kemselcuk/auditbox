@@ -281,6 +281,10 @@ class EventApiControllerTest {
 						base.formatted("validation-no-offset", "2026-10-18T12:00:00"), "occurredAt"),
 				Arguments.of("occurredAt not ISO-8601",
 						base.formatted("validation-not-iso", "18-10-2026"), "occurredAt"),
+				Arguments.of("occurredAt above the supported range",
+						base.formatted("validation-above-range", "+10000-01-01T00:00:00Z"), "occurredAt"),
+				Arguments.of("occurredAt below the supported range",
+						base.formatted("validation-below-range", "0000-12-31T23:59:59Z"), "occurredAt"),
 				Arguments.of("occurredAt missing entirely",
 						"{\"eventId\":\"validation-no-time\",\"userId\":\"user-1\",\"eventType\":\"payment.settled\","
 								+ "\"source\":\"core-banking\"}",
@@ -307,6 +311,23 @@ class EventApiControllerTest {
 			assertThat(error.get("message").stringValue()).isNotBlank();
 		});
 		assertThat(fields).contains(expectedField);
+	}
+
+	@Test
+	void occurredAtAtTheSupportedRangeBoundsIsAcceptedAndReplays() throws Exception {
+		// Review round 3b, F-1: the write path enforces the same range the cursor decode
+		// accepts, so even boundary instants are storable and their cursors replay.
+		for (String occurredAt : new String[] { "0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z" }) {
+			String eventId = uniqueEventId();
+			String body = eventJson(eventId, "user-range", "payment.settled", "core-banking", occurredAt, null);
+
+			HttpResponse<String> first = post(body);
+			HttpResponse<String> retry = post(body);
+
+			assertThat(first.statusCode()).isEqualTo(201);
+			assertThat(retry.statusCode()).isEqualTo(200);
+			assertThat(eventRowCount(eventId)).isEqualTo(1);
+		}
 	}
 
 	// ---------------------------------------------------------------------

@@ -83,7 +83,8 @@ until Stage 5 replaces it with X-API-Key authentication.
 ## API
 
 Both endpoints live under `/api/v1/events`. Machine-readable OpenAPI is served at
-`/v3/api-docs` (Swagger UI in the dev profile). **Authentication today is the temporary
+`/v3/api-docs` and the UI at `/swagger-ui/index.html` (enabled in all profiles until Stage 5
+restricts it). **Authentication today is the temporary
 HTTP basic auth** of the `local`/`test` profiles (Stage 5 replaces it with a static
 `X-API-Key` header — the examples below use the test-profile credentials; for a `local`
 run, pass the user Spring Boot generates and logs at startup, or set
@@ -94,7 +95,8 @@ run, pass the user Spring Boot generates and logs at startup, or set
 `POST /api/v1/events` — idempotent per `eventId` (D4):
 
 - Body: JSON with `eventId` (client-generated, max 128 chars), `userId`, `eventType`,
-  `source`, `occurredAt` (strict ISO-8601 with offset), optional `metadata` (small JSON).
+  `source`, `occurredAt` (strict ISO-8601 with offset, within
+  `0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z`), optional `metadata` (small JSON).
 - `201 Created` stores a new event; `200 OK` is an idempotent retry (same `eventId` with
   identical content — body is the stored record); `409 Conflict` is the same `eventId` with
   different content (stored record in the `existingEvent` extension); `400 Bad Request`
@@ -120,7 +122,8 @@ curl -sS -u test-user:test-password http://localhost:8080/api/v1/events \
 `GET /api/v1/events` — filters and stable keyset pagination (D3):
 
 - Filters (optional, exact match): `userId`, `eventType`, `source`; a blank value counts as
-  no filter. `occurredFrom`/`occurredTo` are inclusive bounds, strict ISO-8601 with offset.
+  no filter. `occurredFrom`/`occurredTo` are inclusive bounds, strict ISO-8601 with offset and
+  inside the same `0001..9999` supported range as `occurredAt`.
 - Pagination: newest first (`occurredAt DESC, eventId DESC`). Echo the previous response's
   `nextCursor` verbatim as `cursor`; `nextCursor` is only set when more results exist and is
   null on the last page. `size` is 1..100 (default 20). There is deliberately no total

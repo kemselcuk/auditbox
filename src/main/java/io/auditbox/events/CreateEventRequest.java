@@ -54,7 +54,8 @@ public record CreateEventRequest(
 
 		@NotNull(message = "occurredAt must not be null")
 		@Iso8601OffsetDateTime
-		@Schema(description = "When the event occurred; strict ISO-8601 with a UTC offset (Z or +/-hh:mm)",
+		@Schema(description = "When the event occurred; strict ISO-8601 with a UTC offset (Z or +/-hh:mm) "
+				+ "within 0001-01-01T00:00:00Z..9999-12-31T23:59:59.999999Z",
 				type = "string", format = "date-time", requiredMode = Schema.RequiredMode.REQUIRED,
 				example = "2026-10-18T12:00:00Z")
 		String occurredAt,

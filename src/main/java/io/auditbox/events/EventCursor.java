@@ -25,8 +25,9 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>The encoded {@code occurredAt} shape is the {@code OffsetDateTime#toString} form of the
  * microsecond-truncated UTC instant (D10/D12): a standard ISO-8601 UTC instant with
- * <em>variable</em> precision — the fractional-seconds part is omitted when zero and otherwise
- * trimmed of trailing zeros, running up to six (microsecond) digits. It is deliberately not a
+ * <em>variable</em> precision — the seconds field and/or the fractional part are omitted when
+ * zero; a non-zero fraction is written with 3 digits when it is whole milliseconds and with 6
+ * digits otherwise, keeping trailing zeros inside that group. It is deliberately not a
  * fixed-width ".SSSSSS" string; decode parses whatever precision the token carries.
  *
  * <p>The document shape is deliberately strict on decode — exactly the two fields, a
@@ -137,10 +138,9 @@ final class EventCursor {
 		// a crafted position outside it could never match a stored row and must not slip
 		// past validation.
 		Instant instant = occurredAt.toInstant();
-		if (instant.isBefore(EventListQuery.MIN_SUPPORTED_INSTANT)
-				|| instant.isAfter(EventListQuery.MAX_SUPPORTED_INSTANT)) {
+		if (!EventTimeRange.supports(instant)) {
 			throw new InvalidEventQueryException("cursor is malformed (occurredAt is outside the supported range "
-					+ EventListQuery.SUPPORTED_RANGE_TEXT + ")");
+					+ EventTimeRange.TEXT + ")");
 		}
 		String eventId = node.get("eventId").asString();
 		if (eventId.isBlank() || eventId.length() > MAX_EVENT_ID_LENGTH) {
