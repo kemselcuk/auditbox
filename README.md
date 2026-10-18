@@ -608,8 +608,9 @@ it. Short summary:
 
 - **Post-handoff M9 (done):** CI pipeline, container image + compose app profile,
   `GET /events/{eventId}`, Micrometer counters, `X-Request-Id` correlation and prod ECS logs,
-  and a CycloneDX SBOM (D16).
-- **Pending owner decisions:** LICENSE, and a Playwright end-to-end test for the demo page.
+  a CycloneDX SBOM (D16) and the MIT license (D17).
+- **Playwright E2E (approved):** browser-level tests for the demo page behind a separate
+  `-Pe2e` Maven profile (M9.7), so `./mvnw verify` keeps its current runtime.
 - **M10 hardening (planned):** per-source hashed keys with rotation, rate limiting with
   429/`Retry-After`, dependency automation (Renovate/Dependabot).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
@@ -618,3 +619,7 @@ it. Short summary:
   plans and reviews rejected as scope creep.
 
 An event platform (e.g. Kafka), additional services, and video demos remain out of scope.
+
+## License
+
+MIT — see [LICENSE](LICENSE) (decision D17).

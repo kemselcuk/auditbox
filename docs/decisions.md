@@ -342,4 +342,18 @@ decision → rationale/alternatives.
   echoed `X-Request-Id`, by-id 200/404, metrics 401 without / 200 with the key, auth-failure
   `reason=missing` tag, ECS prod logs, `bom.json` with 112 components.
 - Open owner decisions: LICENSE type and a Playwright (Java) end-to-end test for the demo page
-  (browser binary download), both deliberately not started without approval.
+  (browser binary download) were both decided on 2026-10-19 — see D17; the Playwright suite
+  itself is tracked as M9.7.
+
+## D17 — MIT license and a Playwright E2E suite for the demo page
+
+- Decision: license AuditBox under **MIT** (owner choice on 2026-10-19; `LICENSE`, `pom.xml`
+  `<licenses>`, README note), and approve a **Playwright for Java** end-to-end suite for the
+  static demo page as an opt-in Maven profile (`-Pe2e`) plus a manually triggered CI job, so
+  the default `./mvnw verify` runtime and the push pipeline are unchanged.
+- Rationale: MIT is the simplest well-understood option for a portfolio repository and removes
+  the "all rights reserved" default; a real-browser test is the only honest way to claim the
+  demo page works, while the separate profile keeps the main suite fast.
+- Consequences: the E2E run downloads a Chromium build (~300 MB, free) on first use; it is not
+  part of the default `verify` and its CI wiring must not slow the push pipeline. The suite is
+  delivered as M9.7 and its evidence recorded in the README/plan.
