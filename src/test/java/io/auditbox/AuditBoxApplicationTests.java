@@ -8,10 +8,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -19,10 +19,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 /**
  * Stage 1 integration test: boots the full application against a real PostgreSQL
  * (Testcontainers, same pinned image as docker-compose.yml) and asserts that
- * /actuator/health reports UP.
+ * /actuator/health reports UP. Runs with the {@code test} profile
+ * (application-test.yml) so the configuration the test claims to verify is actually active.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
+@ActiveProfiles("test")
 class AuditBoxApplicationTests {
 
 	/**

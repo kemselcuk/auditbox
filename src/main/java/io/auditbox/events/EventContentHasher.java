@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -43,20 +44,27 @@ import tools.jackson.databind.ser.std.StdSerializer;
  *   <li><strong>occurredAt.</strong> Parsed as an ISO-8601 date-time with offset and
  *       normalized to the equivalent UTC instant via {@link java.time.Instant#toString()},
  *       so {@code 2026-10-18T12:00:00Z}, {@code 2026-10-18T14:00:00+02:00} and
- *       {@code 2026-10-18T12:00:00.000Z} all hash identically. Input must be the strict
- *       ISO-8601 offset form; anything else fails fast with
- *       {@link java.time.format.DateTimeParseException} (Stage 3 validation surfaces it).</li>
+ *       {@code 2026-10-18T12:00:00.000Z} all hash identically. Fractions are compared at
+ *       microsecond precision — sub-microsecond digits are truncated
+ *       ({@code 12:00:00.123456789Z} ≡ {@code 12:00:00.123456Z}) because PostgreSQL
+ *       {@code timestamptz} stores microseconds; hashing nanoseconds would produce a false
+ *       409 when a client retries with the {@code occurredAt} value the API itself
+ *       returned. Input must be the strict ISO-8601 offset form; anything else fails fast
+ *       with {@link java.time.format.DateTimeParseException} (Stage 3 validation surfaces
+ *       it).</li>
  *   <li><strong>metadata null rule.</strong> An absent metadata value and an explicit JSON
  *       {@code null} are the same content: both canonicalize to JSON {@code null}. Any
  *       present value — including an empty object — is different content.</li>
  *   <li><strong>Numbers.</strong> Canonicalized as exact decimals
  *       ({@link BigDecimal#stripTrailingZeros().toPlainString()}), so {@code 1}, {@code 1.0}
  *       and {@code 1.00} hash identically, and {@code 0.1} and {@code 0.10} hash identically.
- *       Known limit: a value that reached the tree as a JSON double is canonicalized through
- *       its shortest round-trip decimal (the {@code Double.toString} representation), so
- *       binary-float artifacts beyond that shortest form are not preserved. Clients that need
- *       exact high-precision decimals should send a plain decimal form and Stage 3 should read
- *       metadata with {@code USE_BIG_DECIMAL_FOR_FLOATS} to keep it exact end to end.</li>
+ *       Caller requirement: the metadata tree must be built with Jackson 3
+ *       {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS} enabled (the DecimalNode
+ *       path) so client decimals reach the hash exactly. Known limit: a value that reached
+ *       the tree as a JSON double is canonicalized through its shortest round-trip decimal
+ *       (the {@code Double.toString} representation), so high-precision digits beyond that
+ *       shortest form are not preserved on the default DoubleNode path — both behaviors are
+ *       pinned by tests.</li>
  *   <li><strong>Strings and other scalars.</strong> Strings are written as JSON strings with
  *       standard Jackson escaping; booleans and nulls as JSON literals. The whole input is
  *       treated as UTF-8.</li>
@@ -130,10 +138,13 @@ public final class EventContentHasher {
 	/**
 	 * Normalizes an ISO-8601 offset date-time to the UTC instant string used in the
 	 * canonical form. Equal instants always produce equal strings (including trailing-zero
-	 * fraction trimming, e.g. {@code 12:00:00.000Z} becomes {@code 12:00:00Z}).
+	 * fraction trimming, e.g. {@code 12:00:00.000Z} becomes {@code 12:00:00Z}). Fractions
+	 * are truncated to microsecond precision: PostgreSQL {@code timestamptz} stores
+	 * microseconds, so hashing finer nanoseconds would make a retry that echoes the
+	 * {@code occurredAt} value the API itself returned hash differently (a false 409).
 	 */
 	private static String normalizeOccurredAt(String occurredAt) {
-		return OffsetDateTime.parse(occurredAt).toInstant().toString();
+		return OffsetDateTime.parse(occurredAt).toInstant().truncatedTo(ChronoUnit.MICROS).toString();
 	}
 
 	/**
