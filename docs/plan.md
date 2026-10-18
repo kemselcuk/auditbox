@@ -52,14 +52,14 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T4.1 | Filters `userId`, `eventType`, `source`, `occurredAt` from/to; order `occurred_at DESC, event_id DESC`; opaque base64 cursor; default 20 / max 100; `nextCursor` only when more results exist | Filter combination tests green; **pagination walk test: full dataset traversed with no duplicates or gaps, including rows sharing the same `occurred_at`**; walk stays stable while a new event is inserted | in progress |
-| T4.2 | Malformed cursor → 400; invalid date range → 400; OpenAPI parameter docs | Negative tests green; documented in README | in progress |
+| T4.1 | Filters `userId`, `eventType`, `source`, `occurredAt` from/to; order `occurred_at DESC, event_id DESC`; opaque base64 cursor; default 20 / max 100; `nextCursor` only when more results exist | Filter combination tests green; **pagination walk test: full dataset traversed with no duplicates or gaps, including rows sharing the same `occurred_at`**; walk stays stable while a new event is inserted | done |
+| T4.2 | Malformed cursor → 400; invalid date range → 400; OpenAPI parameter docs | Negative tests green; documented in README | done |
 
 ### Stage 5 — X-API-Key security
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T5.1 | Stateless Spring Security + API key filter; constant-time comparison; missing/wrong key → 401 (Problem Details); `prod` fails fast without a key; health public; Swagger dev-profile only | Security tests green (401/401/201 pattern); README "Authentication"; OpenAPI security scheme present | pending |
+| T5.1 | Stateless Spring Security + API key filter; constant-time comparison; missing/wrong key → 401 (Problem Details); `prod` fails fast without a key; health public; Swagger dev-profile only | Security tests green (401/401/201 pattern); README "Authentication"; OpenAPI security scheme present | in progress |
 
 ### Stage 6 — Demo package
 
@@ -110,3 +110,15 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
 - **Round 2d** (2026-10-18, sign-off): verdict **"sound with minor issues"** (docs-only wording
   residuals; optional nits). Fixed in `93c5c84`; F1 totality proven (299 live/programmatic checks,
   3343-value guard cross-check); 108 tests green (orchestrator-run). **Stage 3 signed off.**
+- **Round 3** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 4): verdict **"not sound"**.
+  F1 cursor encode bound (512) below the worst legal cursor (1104): emitted-then-rejected tokens
+  broke walks for control-character eventIds; F4 GET range/NUL errors surfaced a POST-oriented
+  detail; F2/F3/F5/F6/F7 doc/test nits; README API placeholder. Fixes `fc1c03a`, `b52174a`.
+- **Round 3b** (2026-10-18, Stage 4 fixes): verdict **"sound with minor issues"**, not signed off:
+  F-1 residual encode>decode range asymmetry (write-legal occurredAt outside the read range),
+  L1/L2 doc precision, L3 local legacy rows, I1 attribution. Fixes `9cc2dd4`, `e8612b1`, plus
+  `66f8337` (doc precision) and local-volume cleanup.
+- **Round 3c** (2026-10-18, sign-off): verdict **"sound with minor issues"**, conditional sign-off
+  pending L1/L2 doc precision, L3 legacy-row hygiene and the I1 attribution; no behavioral
+  findings, 164 tests green. Conditions met in `66f8337`; local out-of-range legacy rows deleted.
+  **Stage 4 signed off.**
