@@ -303,3 +303,6 @@ decision → rationale/alternatives.
   resets the cursor on filter edits and uses a random fallback eventId (F10–F11); README notes
   updated (F9, F12). Evidence: 207 tests; four back-to-back script runs all exit 0 with
   1×201 + 9×200 and one row; client error paths (exit 2/1/1) verified live.
+- Round 5b sign-off (2026-10-18): verdict **"sound"**; two cosmetic script notes (raw curl/psql
+  stderr on preflight failures) were fixed in the sign-off commit, so failures print only the
+  prepared messages. **Stage 6 signed off.**

@@ -15,7 +15,7 @@ X-API-Key authentication are all in place.
 AuditBox is **not** a tamper-proof ledger — it records what it receives, and stored records can be
 updated or deleted like any other database row.
 
-Status: Stage 5 (X-API-Key security) — roadmap in [docs/plan.md](docs/plan.md).
+Status: Stage 6 (demo package) — roadmap in [docs/plan.md](docs/plan.md).
 
 ## Prerequisites
 

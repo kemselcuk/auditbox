@@ -65,16 +65,16 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T6.1 | Small Java client (JDK HttpClient, no extra dependencies) generating N sample events | Client run against the local app produces seeded events; usage documented | in progress |
-| T6.2 | Single-page web demo (vanilla HTML+JS served by the app): API key input, filters, table, "load more" cursor, send-event form | Verified in a browser by the orchestrator (screenshot into `docs/images/`); README steps reproduce it | in progress |
-| T6.3 | Deterministic dedupe script: concurrent identical eventId submissions (HTTP status distribution + DB row count) and a different-content 409 case; one command, stable output | Script output embedded in README as a real transcript | in progress |
+| T6.1 | Small Java client (JDK HttpClient, no extra dependencies) generating N sample events | Client run against the local app produces seeded events; usage documented | done |
+| T6.2 | Single-page web demo (vanilla HTML+JS served by the app): API key input, filters, table, "load more" cursor, send-event form | Verified in a browser by the orchestrator (screenshot into `docs/images/`); README steps reproduce it | done |
+| T6.3 | Deterministic dedupe script: concurrent identical eventId submissions (HTTP status distribution + DB row count) and a different-content 409 case; one command, stable output | Script output embedded in README as a real transcript | done |
 
 ### Stage 7 — Test hardening and README
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T7.1 | Acceptance criteria → test/evidence matrix in this file; gaps closed | `./mvnw verify` fully green; every criterion mapped to a test or demo evidence | pending |
-| T7.2 | README: Overview, What this is / is not, Architecture, API examples, Decisions summary, Getting started, Demo (real outputs), Testing & evidence, Next steps | Orchestrator follows README literally on a clean checkout and succeeds; claims match evidence | pending |
+| T7.1 | Acceptance criteria → test/evidence matrix in this file; gaps closed | `./mvnw verify` fully green; every criterion mapped to a test or demo evidence | in progress |
+| T7.2 | README: Overview, What this is / is not, Architecture, API examples, Decisions summary, Getting started, Demo (real outputs), Testing & evidence, Next steps | Orchestrator follows README literally on a clean checkout and succeeds; claims match evidence | in progress |
 
 ### Stage 8 — Independent final review and handoff
 
@@ -122,6 +122,15 @@ Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
   pending L1/L2 doc precision, L3 legacy-row hygiene and the I1 attribution; no behavioral
   findings, 164 tests green. Conditions met in `66f8337`; local out-of-range legacy rows deleted.
   **Stage 4 signed off.**
+- **Round 5** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 6): verdict **"not sound"**,
+  solely because of F1 (the dedupe script's second-resolution run id collided on back-to-back
+  runs, producing a misleading failure); client determinism, the demo page (incl. an adversarial
+  XSS probe), security scoping, tests and evidence were all sound. F2-F12 were minor/nits.
+  Fixes `41b7712`, `ad7fc09`.
+- **Round 5b** (2026-10-18, sign-off): verdict **"sound"** — all F1-F12 verified closed with live
+  evidence (4 back-to-back + 2 overlapping script runs, client exit codes 2/1/1, page
+  filter-snapshot behaviour), 207 tests green; two cosmetic script notes folded into this
+  sign-off commit. **Stage 6 signed off.**
 - **Round 4** (2026-10-18, DeepSeek V4.1 Flash, read-only, Stage 5): verdict **"sound with minor
   issues"**, nothing blocking. F1 raw invalid percent-escapes returned 500 (pre-existing Stage 4
   gap), F2 `/logout` answered 302 without a key, F3 whitespace in `API_KEY` caused a silent
