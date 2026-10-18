@@ -81,20 +81,22 @@ db_event_count() {
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$DB_CONTAINER"; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$sql"
   else
-    # Fallback without docker: a host psql binary connecting over the host port.
+    # Fallback without docker: a host psql binary connecting over the host port. A failing
+    # psql must not abort the script through set -e/pipefail with its raw stderr and exit
+    # code: the empty output falls through to the caller's prepared capability message.
     if command -v psql >/dev/null 2>&1; then
       PGPASSWORD="${DB_PASSWORD:-auditbox}" psql -h localhost -p "$DB_PORT" -U "$DB_USER" \
-        -d "$DB_NAME" -tAc "$sql"
+        -d "$DB_NAME" -tAc "$sql" 2>/dev/null || true
     else
       fail "neither docker with container '$DB_CONTAINER' nor a host psql binary is available"
     fi
   fi
 }
 
-# Preflight 1: the app must be reachable (health is public, no key needed). curl's own
-# connection failure must neither abort here (set -e) nor print a raw curl error: the
-# prepared [FAIL] message below is the output for exactly that case.
-health="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/actuator/health" || true)"
+# Preflight 1: the app must be reachable (health is public, no key needed). The preflight
+# uses curl -s so a connection failure prints neither a raw curl error nor aborts here
+# (set -e): the prepared [FAIL] message below is the output for exactly that case.
+health="$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/actuator/health" || true)"
 [ "$health" = "200" ] || fail "the app is not reachable at $BASE_URL (health returned '${health:-no response}')"
 
 # Preflight 2: the DB row-count capability must work before anything is written, so a later
