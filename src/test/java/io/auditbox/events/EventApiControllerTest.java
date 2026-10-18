@@ -881,7 +881,8 @@ class EventApiControllerTest {
 		assertThat(response.statusCode()).isEqualTo(200);
 		JsonNode docs = JSON.readTree(response.body());
 
-		JsonNode post = docs.get("paths").get(EVENT_PATH).get("post");
+		JsonNode eventPath = docs.get("paths").get(EVENT_PATH);
+		JsonNode post = eventPath.get("post");
 		assertThat(post).isNotNull();
 		assertThat(post.get("summary").stringValue()).isEqualTo("Record an event");
 		JsonNode responses = post.get("responses");
@@ -892,6 +893,14 @@ class EventApiControllerTest {
 		assertThat(post.get("requestBody").get("content").get("application/json").get("schema")
 				.get("$ref").stringValue()).endsWith("CreateEventRequest");
 
+		// Milestone 9.3: the single-event fetch is documented too (its own path), with its 200 and 404.
+		JsonNode getById = docs.get("paths").get(EVENT_PATH + "/{eventId}").get("get");
+		assertThat(getById).isNotNull();
+		assertThat(getById.get("summary").stringValue()).isEqualTo("Fetch a single event");
+		JsonNode getByIdResponses = getById.get("responses");
+		assertThat(getByIdResponses.has("200")).isTrue();
+		assertThat(getByIdResponses.has("404")).isTrue();
+
 		JsonNode createSchema = docs.get("components").get("schemas").get("CreateEventRequest");
 		assertThat(createSchema).isNotNull();
 		assertThat(createSchema.get("required").toString())
@@ -901,6 +910,55 @@ class EventApiControllerTest {
 		assertThat(eventIdProperty.get("maxLength").intValue()).isEqualTo(128);
 		JsonNode occurredAtProperty = createSchema.get("properties").get("occurredAt");
 		assertThat(occurredAtProperty.get("format").stringValue()).isEqualTo("date-time");
+	}
+
+	// ---------------------------------------------------------------------
+	// Milestone 9.3: GET /api/v1/events/{eventId}
+	// ---------------------------------------------------------------------
+
+	/**
+	 * The single-event fetch returns exactly the body the original 201 returned (same
+	 * shape, same stored record — the jsonb read path renders identically).
+	 */
+	@Test
+	void getReturnsTheStoredEventByEventId() throws Exception {
+		String eventId = uniqueEventId();
+
+		HttpResponse<String> created = post(eventJson(eventId, "user-1", "payment.settled", "core-banking",
+				"2026-10-18T12:00:00.123456Z", "{\"amount\":7,\"currency\":\"EUR\"}"));
+		assertThat(created.statusCode()).isEqualTo(201);
+
+		HttpResponse<String> response = getWithKey(EVENT_PATH + "/" + eventId);
+
+		assertThat(response.statusCode()).isEqualTo(200);
+		assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
+		assertThat(JSON.readTree(response.body())).isEqualTo(JSON.readTree(created.body()));
+		assertThat(JSON.readTree(response.body()).get("eventId").stringValue()).isEqualTo(eventId);
+	}
+
+	@Test
+	void getUnknownEventIdReturns404ProblemDetailsWithGenericDetail() throws Exception {
+		HttpResponse<String> response = getWithKey(EVENT_PATH + "/no-event-" + UUID.randomUUID());
+
+		assertThat(response.statusCode()).isEqualTo(404);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		JsonNode problem = JSON.readTree(response.body());
+		assertThat(problem.get("status").intValue()).isEqualTo(404);
+		assertThat(problem.get("title").stringValue()).isEqualTo("Not Found");
+		// Generic detail: no internals, no leak of storage errors.
+		assertThat(problem.get("detail").stringValue()).isEqualTo("Event not found");
+		assertThat(response.body()).doesNotContain("org.", "Exception");
+	}
+
+	@Test
+	void getWithoutApiKeyIsRejectedWith401() throws Exception {
+		HttpResponse<String> response = getWithoutKey(EVENT_PATH + "/" + uniqueEventId());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertThat(response.headers().firstValue("Content-Type").orElse(""))
+				.startsWith("application/problem+json");
+		assertThat(JSON.readTree(response.body()).get("title").stringValue()).isEqualTo("Unauthorized");
 	}
 
 	// ---------------------------------------------------------------------
@@ -933,6 +991,21 @@ class EventApiControllerTest {
 
 	private static String uniqueEventId() {
 		return "t3-" + UUID.randomUUID();
+	}
+
+	private HttpResponse<String> getWithoutKey(String path) throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+				.GET()
+				.build();
+		return client.send(request, HttpResponse.BodyHandlers.ofString());
+	}
+
+	private HttpResponse<String> getWithKey(String path) throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+				.header("X-API-Key", API_KEY)
+				.GET()
+				.build();
+		return client.send(request, HttpResponse.BodyHandlers.ofString());
 	}
 
 	private int eventRowCount(String eventId) {

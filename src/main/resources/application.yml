@@ -46,7 +46,9 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # Milestone 9.4: metrics joins health/info. Every actuator endpoint except
+        # health stays behind the static API key (ApiKeySecurityConfiguration).
+        include: health,info,metrics
 
 # Static API key (D5): validated by the X-API-Key filter (ApiKeySecurityConfiguration),
 # bound from the API_KEY environment variable. Blank by default — a blank configured key

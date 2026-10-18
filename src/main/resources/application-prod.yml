@@ -1,0 +1,18 @@
+# Prod profile: structured (machine-readable) logging, Milestone 9.5.
+#
+# The shipped logs are ECS JSON on the console (Spring Boot 4's built-in structured
+# logging; see https://docs.spring.io/spring-boot/reference/features/logging.html#features.logging.structured).
+# Only the prod profile changes log presentation: local, dev and test keep the plain
+# human-readable console output. The request correlation id sits under the MDC key
+# `requestId` (RequestIdFilter) and is serialized by the ECS formatter together with the
+# other MDC entries.
+#
+# Service identity fields of the ECS output (defaults when not overridden by environment):
+spring:
+  application:
+    name: auditbox
+
+logging:
+  structured:
+    format:
+      console: ecs

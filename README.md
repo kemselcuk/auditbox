@@ -21,9 +21,16 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   `occurredAt` range, orders newest first, and pages with an opaque keyset cursor. Each page
   request is a single `SELECT` capped at `size + 1` rows; there is no total count, and pages
   are stable under concurrent inserts.
+- **Single fetch** (`GET /api/v1/events/{eventId}`) returns one stored record, or `404`
+  Problem Details for an unknown `eventId`.
+- **Metrics**: Micrometer counters for created/replayed/conflicted events and failed API-key
+  checks, exposed through the key-protected `/actuator/metrics` endpoint.
+- **Correlation**: every request gets an `X-Request-Id` (echoed from a safe incoming value or
+  generated), carried in the response header and the MDC of every log line; `prod` logs ECS
+  JSON to the console.
 - **Authentication** is a static `X-API-Key` header checked with a constant-time comparison;
   `prod` refuses to start without a configured key.
-- **OpenAPI** descriptions exist for both endpoints (`/v3/api-docs`), served only in the
+- **OpenAPI** descriptions exist for all endpoints (`/v3/api-docs`), served only in the
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
@@ -293,6 +300,65 @@ curl -sS -H "X-API-Key: local-dev-key" \
   'http://localhost:8080/api/v1/events?cursor=<nextCursor-from-the-previous-page>'
 ```
 
+### Fetch one event (GET)
+
+`GET /api/v1/events/{eventId}` — the stored record of exactly the given `eventId`, in the
+same shape as the `201` body of its POST and the `existingEvent` extension of its `409`:
+
+```bash
+curl -sS -H "X-API-Key: local-dev-key" \
+  'http://localhost:8080/api/v1/events/eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40'
+```
+
+Real response (stored event):
+
+```text
+HTTP/1.1 200
+{"id":761,"eventId":"eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40","userId":"user-42",
+ "eventType":"payment.settled","source":"core-banking","occurredAt":"2026-10-18T12:00:00Z",
+ "metadata":null,"receivedAt":"2026-10-18T21:40:17.857688Z"}
+```
+
+Unknown `eventId` → `404 Not Found` Problem Details with a generic detail (no internals):
+
+```text
+HTTP/1.1 404
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1/events/unknown-id",
+ "detail":"Event not found"}
+```
+
+## Observability
+
+- **Metrics** (Milestone 9.4): `GET /actuator/metrics` is exposed (health, info and metrics
+  are exposed; key-protected like every non-health endpoint). Domain counters:
+  `auditbox.events.created` (201), `auditbox.events.replayed` (200), `auditbox.events.conflicts`
+  (409) and `auditbox.auth.failures` with the closed tag set `reason=missing|invalid` — the
+  key itself is never a metric name, tag, or value.
+
+```bash
+curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/actuator/metrics/auditbox.events.created
+```
+
+```text
+{"name":"auditbox.events.created","description":null,"baseUnit":null,
+ "measurements":[{"statistic":"COUNT","value":1.0}],"availableTags":[]}
+```
+
+- **Correlation IDs** (Milestone 9.5): send `X-Request-Id` (1..128 characters of
+  `A-Za-z0-9._-`) and the service echoes it verbatim in the response header — 401s included —
+  and puts it under the `requestId` MDC key for all its log lines. When the header is absent
+  or unsafe, a UUID is generated; an untrusted value is never echoed:
+
+```text
+$ curl -sS -i -H "X-API-Key: local-dev-key" -H "X-Request-Id: run-42" http://localhost:8080/api/v1/events
+HTTP/1.1 200
+X-Request-Id: run-42
+```
+
+- **Structured logging** (Milestone 9.5, `prod` profile only): the console logs are ECS JSON
+  (`logging.structured.format.console=ecs`, a Spring Boot built-in — no extra dependency);
+  local/dev/test keep the human-readable console format.
+
 ## Authentication
 
 Every request except `/actuator/health/**` and the static demo page (`/demo/**`, see
@@ -481,8 +547,10 @@ per class:
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
 | `EventsSchemaMigrationTest` | Flyway V1 applies on a clean database; columns, types, nullability, defaults, unique constraint (rejecting SQLState 23505), indexes (T2.1) |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
-| `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI, 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
+| `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI (including the `{eventId}` fetch), 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
+| `MetricsApiControllerTest` | Micrometer counters over real HTTP: created/replayed/conflict deltas for 201/200/409, auth-failure `reason=missing|invalid` tags (key never tagged), metrics endpoint 401 without / 200 with the key (milestone 9.4) |
+| `RequestIdFilterTest` | correlation filter: safe-pattern decision boundaries (echo verbatim vs. generated UUID, length 1/128/129), unsafe-id scrubbing over real HTTP, echo on 401 responses (milestone 9.5) |
 | `EventCursorTest` | cursor codec unit tests: round trips and every strict rejection (T4.1/T4.2) |
 | `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries (D10/D12; rejection is allocation-free by design — a code-level property, not a timing test) |
 | `ApiKeySecurityTest` | 401/401/201 pattern, key echo, duplicate-header first-value, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
@@ -498,7 +566,10 @@ browser demo, dedupe transcript) and the recorded evidence gaps.
 
 The demo transcripts and the screenshot above are real runs, not mock-ups; API responses in
 this README were captured from a live local run. Continuous integration runs the same suite
-on every push/PR to `main` (badge at the top of this document).
+on every push/PR to `main` (badge at the top of this document). Every CI run always uploads
+the CycloneDX SBOM of the build as the `sbom` artifact: the
+[cyclonedx-maven-plugin](https://cyclonedx.github.io/cyclonedx-maven-plugin) writes
+`target/bom.json` (CycloneDX v1.6 JSON) on every `package`/`verify` (Milestone 9.6).
 
 ## Decisions
 
@@ -530,11 +601,17 @@ it. Short summary:
   query mechanics, error behavior.
 - **D14** security chain details: filtering scheme, comparison, response shapes, docs gating.
 - **D15** demo package: client, browser page, dedupe script and their reproducibility rules.
+- **D16** post-handoff M9: CI + container, single fetch, metrics counters, correlation ID +
+  prod ECS logs, SBOM.
 
 ## Next steps
 
-- **Stage 8 — independent final review and handoff** (per [docs/plan.md](docs/plan.md)): a
-  read-only full-diff/docs review round, then the final acceptance pass and cost report.
+- **Post-handoff M9 (done):** CI pipeline, container image + compose app profile,
+  `GET /events/{eventId}`, Micrometer counters, `X-Request-Id` correlation and prod ECS logs,
+  and a CycloneDX SBOM (D16).
+- **Pending owner decisions:** LICENSE, and a Playwright end-to-end test for the demo page.
+- **M10 hardening (planned):** per-source hashed keys with rotation, rate limiting with
+  429/`Retry-After`, dependency automation (Renovate/Dependabot).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

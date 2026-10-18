@@ -8,6 +8,8 @@ import java.time.temporal.ChronoUnit;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
+import io.auditbox.metrics.AuditMetrics;
+
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -34,10 +36,12 @@ public class EventService {
 
 	private final EventInsertService insertService;
 	private final EventRepository repository;
+	private final AuditMetrics metrics;
 
-	EventService(EventInsertService insertService, EventRepository repository) {
+	EventService(EventInsertService insertService, EventRepository repository, AuditMetrics metrics) {
 		this.insertService = insertService;
 		this.repository = repository;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -68,7 +72,10 @@ public class EventService {
 		event.setContentHash(contentHash);
 
 		try {
-			return EventWriteResult.created(insertService.insert(event));
+			EventWriteResult created = EventWriteResult.created(insertService.insert(event));
+			// Milestone 9.4: exactly the 201 outcome counts as created.
+			metrics.eventCreated();
+			return created;
 		}
 		catch (DataIntegrityViolationException e) {
 			if (!isUniqueEventIdViolation(e)) {
@@ -78,7 +85,9 @@ public class EventService {
 			// uq_events_event_id is the only unique constraint on the table, so a 23505 is by
 			// definition a duplicate eventId (D4). The failed insert transaction is already
 			// rolled back (EventInsertService); the stored row is the committed winner.
-			return EventWriteResult.replayed(storedEvent(request.eventId(), contentHash));
+			EventWriteResult replayed = EventWriteResult.replayed(storedEvent(request.eventId(), contentHash));
+			metrics.eventReplayed();
+			return replayed;
 		}
 	}
 
@@ -112,6 +121,9 @@ public class EventService {
 		if (existing.getContentHash().equals(contentHash)) {
 			return existing;
 		}
+		// Milestone 9.4: the D4 conflict (same eventId, different content → 409) is counted
+		// exactly where it is decided, before the handler renders the response.
+		metrics.eventConflicted();
 		throw new EventConflictException(existing);
 	}
 

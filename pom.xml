@@ -99,6 +99,29 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!-- SBOM (Milestone 9.6): a CycloneDX BOM over all direct and transitive
+			     dependencies is written to target/bom.json on every package (and therefore
+			     every ./mvnw verify and CI run); the CI workflow uploads it as an artifact.
+			     2.9.x is the newest released line (uses CycloneDX schema v1.6). -->
+			<plugin>
+				<groupId>org.cyclonedx</groupId>
+				<artifactId>cyclonedx-maven-plugin</artifactId>
+				<version>2.9.3</version>
+				<configuration>
+					<!-- JSON only: the artifact consumers read bom.json; no need for the XML twin. -->
+					<outputFormat>json</outputFormat>
+					<projectType>application</projectType>
+				</configuration>
+				<executions>
+					<execution>
+						<id>make-sbom</id>
+						<phase>package</phase>
+						<goals>
+							<goal>makeBom</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
 		</plugins>
 	</build>
 

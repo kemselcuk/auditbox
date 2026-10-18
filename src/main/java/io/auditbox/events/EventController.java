@@ -11,6 +11,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -69,6 +70,29 @@ public class EventController {
 		return result.created()
 				? ResponseEntity.status(HttpStatus.CREATED).body(response)
 				: ResponseEntity.ok(response);
+	}
+
+	/**
+	 * Returns the single stored event for the given eventId or a 404 Problem Details
+	 * response when no event with that eventId is stored (Milestone 9.3). Like every other
+	 * endpoint it requires the static X-API-Key header (D5). The lookup is a parameterized
+	 * primary-key-style query — the path value never reaches SQL as text.
+	 */
+	@Operation(summary = "Fetch a single event", description = """
+			Returns the stored record of exactly the given eventId — the same shape as the 201
+			body of its POST / the existingEvent extension of its 409. When no event with that
+			eventId is stored the answer is 404 Problem Details with a generic detail.""")
+	@ApiResponses({
+			@ApiResponse(responseCode = "200", description = "Stored event record",
+					content = @Content(mediaType = "application/json",
+							schema = @Schema(implementation = EventResponse.class))),
+			@ApiResponse(responseCode = "404", description = "No event is stored under the given eventId",
+					content = @Content(mediaType = "application/problem+json")) })
+	@GetMapping("/{eventId}")
+	public EventResponse get(
+			@Parameter(description = "Client-generated eventId of the stored event", example = "eb5a3a10-6d2d-4df1-9e3a-1e5a0b2c3d40")
+			@PathVariable String eventId) {
+		return eventQueryService.get(eventId);
 	}
 
 	/**

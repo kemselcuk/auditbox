@@ -5,6 +5,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+
+import io.auditbox.metrics.AuditMetrics;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
@@ -46,7 +48,8 @@ import jakarta.servlet.DispatcherType;
 public class ApiKeySecurityConfiguration {
 
 	@Bean
-	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyProperties properties) throws Exception {
+	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyProperties properties,
+			AuditMetrics metrics) throws Exception {
 		return http
 				.csrf(csrf -> csrf.disable())
 				.logout(logout -> logout.disable())
@@ -57,7 +60,7 @@ public class ApiKeySecurityConfiguration {
 						// Static single-page demo only — never the API (plan task T6.2).
 						.requestMatchers("/demo/**").permitAll()
 						.anyRequest().authenticated())
-				.addFilterBefore(new ApiKeyAuthenticationFilter(properties),
+				.addFilterBefore(new ApiKeyAuthenticationFilter(properties, metrics),
 						UsernamePasswordAuthenticationFilter.class)
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint()))

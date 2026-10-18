@@ -41,6 +41,17 @@ public class EventQueryService {
 	}
 
 	/**
+	 * Returns the stored record for exactly the given eventId (Milestone 9.3) or throws
+	 * {@link EventNotFoundException} (rendered as a 404 Problem Details response with a
+	 * generic detail by {@link EventApiExceptionHandler}).
+	 */
+	public EventResponse get(String eventId) {
+		return repository.findByEventId(eventId)
+				.map(EventResponse::from)
+				.orElseThrow(EventNotFoundException::new);
+	}
+
+	/**
 	 * Returns one page of at most {@code query.size()} items, newest first, plus the cursor
 	 * to the next page when more results exist. The keyset predicate
 	 * {@code (occurred_at < :cursorTime) OR (occurred_at = :cursorTime AND event_id < :cursorId)}

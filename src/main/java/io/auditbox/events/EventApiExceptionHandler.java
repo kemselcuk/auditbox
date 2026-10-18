@@ -125,6 +125,18 @@ public class EventApiExceptionHandler extends ResponseEntityExceptionHandler {
 	}
 
 	/**
+	 * Single-event lookup without a match (Milestone 9.3): 404 Problem Details with a
+	 * generic detail — the body carries no internals and does not probe the submitted id
+	 * beyond echoing it as part of the URL, if at all.
+	 */
+	@ExceptionHandler(EventNotFoundException.class)
+	public ResponseEntity<Object> handleEventNotFound(EventNotFoundException ex) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+		problem.setTitle("Not Found");
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+	}
+
+	/**
 	 * Duplicate eventId with different content (D4): 409 with the stored record in the
 	 * {@code existingEvent} extension, same shape as a success response.
 	 */

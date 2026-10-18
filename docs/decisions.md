@@ -313,3 +313,33 @@ decision → rationale/alternatives.
   malformed-JSON error shape is now described as a generic detail, with a new integration test;
   the duplicate-header behavior gained a test (first value wins); the README's OTAP sentence and
   the evidence wording were corrected (F1-F9).
+
+## D16 — Post-handoff M9 enhancements (CI, container, observability, SBOM)
+
+- Decision: extend the delivered service with portfolio/ops improvements without changing the
+  existing API semantics:
+  - **CI:** GitHub Actions on every push/PR to `main` — build + `./mvnw -B verify` against
+    Testcontainers, a second job that builds the Docker image, always-uploaded SBOM, and
+    surefire reports on failure; a README badge links to it.
+  - **Container:** multi-stage Dockerfile (Maven build → Temurin 21 JRE, non-root), a
+    `.dockerignore`, and an opt-in compose `app` profile (`docker compose --profile app up
+    --build`) that waits for the db healthcheck. The default db-only workflow is unchanged.
+  - **Single fetch:** `GET /api/v1/events/{eventId}` returns the stored record or 404 Problem
+    Details (generic detail), behind the same API key.
+  - **Metrics:** Micrometer counters `auditbox.events.created/replayed/conflicts` on the write
+    decision points and `auditbox.auth.failures` tagged `reason=missing|invalid` (closed tag
+    set; the key is never a tag, value, or log line). `/actuator/metrics` is exposed and
+    key-protected; health stays public.
+  - **Correlation:** `X-Request-Id` is echoed when it matches `[A-Za-z0-9._-]{1,128}` and
+    generated otherwise; it is stored in the `requestId` MDC key, echoed on every response
+    (including 401s) and cleared per request. `prod` logs ECS JSON via Spring Boot's built-in
+    structured logging; local/dev/test keep plain logs.
+  - **SBOM:** CycloneDX Maven plugin 2.9.3 writes `target/bom.json` (CycloneDX 1.6) during
+    package; CI uploads it as the `sbom` artifact.
+- Rationale: close the final review's operational gaps at EUR 0 (public-repo Actions, OSS
+  tooling) while keeping the single-service/single-table scope.
+- Evidence: 226 tests green; CI run green (build 1m27s, image 1m21s); live probes: 201 with the
+  echoed `X-Request-Id`, by-id 200/404, metrics 401 without / 200 with the key, auth-failure
+  `reason=missing` tag, ECS prod logs, `bom.json` with 112 components.
+- Open owner decisions: LICENSE type and a Playwright (Java) end-to-end test for the demo page
+  (browser binary download), both deliberately not started without approval.

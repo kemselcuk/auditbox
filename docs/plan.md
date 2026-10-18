@@ -3,6 +3,10 @@
 Owner-approved 2026-10-18. Executed in small tasks; no stage starts before the previous stage's
 tests are green.
 
+> Post-handoff M9 enhancements (CI, container, single fetch, metrics, correlation IDs, SBOM)
+> are recorded in D16 and the README; the stage tables below describe the original delivered
+> scope.
+
 **Verification loop per task:** brief → implementation by a delegated GLM-5.3-Flash child task →
 the orchestrator reviews the diff and runs the tests personally → fix rounds if needed → status
 update in this file. At every stage boundary, an independent read-only review round runs on a

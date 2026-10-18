@@ -26,6 +26,17 @@ jobs:
       - name: Build and test
         run: ./mvnw -B verify
 
+      - name: Upload SBOM
+        # Always: the CycloneDX SBOM of the build (target/bom.json, produced by the
+        # cyclonedx-maven-plugin during package) is uploaded on every run, even when a
+        # later step fails. The file is small (a few hundred KB of JSON).
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: target/bom.json
+          if-no-files-found: ignore
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
