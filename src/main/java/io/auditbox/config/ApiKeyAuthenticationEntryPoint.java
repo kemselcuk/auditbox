@@ -15,9 +15,9 @@ import jakarta.servlet.http.HttpServletResponse;
  * (decision D5, plan task T5.1): {@code application/problem+json} with {@code title}
  * "Unauthorized" and a {@code detail} naming the {@code X-API-Key} header. All values are
  * build-time constants (no user input is echoed), so the JSON can be written literally.
- * The response carries no WWW-Authenticate challenge equivalent — the OpenAPI document
- * (ApiKey SecurityScheme, in: header) is the machine-readable hint for clients except for
- * the standard header added below, which names the header without any credential material.
+ * The response carries a {@code WWW-Authenticate: X-API-Key} challenge that names the
+ * required header without any credential material; the OpenAPI document (ApiKey
+ * SecurityScheme, in: header) is the machine-readable companion hint for clients.
  */
 class ApiKeyAuthenticationEntryPoint implements AuthenticationEntryPoint {
 

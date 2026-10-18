@@ -12,7 +12,10 @@ import java.security.NoSuchAlgorithmException;
  *
  * <p>Null and blank values never match — in particular a blank configured key (no
  * {@code API_KEY}) authenticates nothing, so a profile-less run denies everything except
- * the public actuator health endpoints. No value is ever logged.
+ * the public actuator health endpoints. The configured key is stripped of surrounding
+ * whitespace before comparison (review round 4, F3 — headers are trimmed by the container,
+ * so {@code " key "} in the configuration could otherwise never match); the provided
+ * header value is compared exactly as received. No value is ever logged.
  */
 final class ApiKeyMatcher {
 
@@ -20,14 +23,16 @@ final class ApiKeyMatcher {
 	}
 
 	/**
-	 * @param configured the configured key (may be null/blank — then nothing matches)
+	 * @param configured the configured key (may be null/blank or carry surrounding
+	 *                   whitespace — then nothing matches after stripping)
 	 * @param provided the raw {@code X-API-Key} header value (may be null/blank)
 	 */
 	static boolean matches(String configured, String provided) {
-		if (configured == null || configured.isBlank() || provided == null || provided.isBlank()) {
+		String trimmedConfigured = configured == null ? null : configured.strip();
+		if (trimmedConfigured == null || trimmedConfigured.isEmpty() || provided == null || provided.isBlank()) {
 			return false;
 		}
-		return MessageDigest.isEqual(sha256(configured), sha256(provided));
+		return MessageDigest.isEqual(sha256(trimmedConfigured), sha256(provided));
 	}
 
 	private static byte[] sha256(String value) {

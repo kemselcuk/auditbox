@@ -7,6 +7,8 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.tomcat.util.http.InvalidParameterException;
+
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -33,6 +35,8 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  *       outside 1..100 — the violation is the detail, and the messages name the offending
  *       parameter, never the POST-oriented "Event content could not be stored" (review
  *       round 3, F4),</li>
+ *   <li>400 for raw invalid percent-escapes in the query string (review round 4, F1) with a
+ *       generic detail,</li>
  *   <li>409 for a duplicate eventId with different content, carrying the stored record in the
  *       {@code existingEvent} extension in exactly the shape of a success response (D4),</li>
  *   <li>400 for request content PostgreSQL rejects as a "data exception" (SQLState class 22,
@@ -101,6 +105,21 @@ public class EventApiExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(InvalidEventQueryException.class)
 	public ResponseEntity<Object> handleInvalidEventQuery(InvalidEventQueryException ex) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+		problem.setTitle("Bad Request");
+		return ResponseEntity.badRequest().body(problem);
+	}
+
+	/**
+	 * Raw invalid percent-escapes in the query string (review round 4, F1), e.g.
+	 * {@code GET /api/v1/events?cursor=%zz}: Tomcat rejects them with
+	 * {@link InvalidParameterException} while parsing the query parameters, which surfaced
+	 * as a generic 500 (a Stage 4 gap). Malformed input is a client error (D12/D13): 400
+	 * Problem Details with a generic detail naming no internals.
+	 */
+	@ExceptionHandler(InvalidParameterException.class)
+	public ResponseEntity<Object> handleInvalidPercentEncoding(InvalidParameterException ex) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+				"Query string contains invalid percent-encoding");
 		problem.setTitle("Bad Request");
 		return ResponseEntity.badRequest().body(problem);
 	}

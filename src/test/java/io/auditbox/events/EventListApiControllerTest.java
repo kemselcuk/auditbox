@@ -1,5 +1,6 @@
 package io.auditbox.events;
 
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -454,6 +455,40 @@ class EventListApiControllerTest {
 	void nulCharacterInFilterValuesIs400NamingTheParameter() throws Exception {
 		assert400DetailNamesParameter(get("/api/v1/events?userId=user%00"), "userId");
 		assert400DetailNamesParameter(get("/api/v1/events?eventType=payment%00x"), "eventType");
+	}
+
+	/**
+	 * Review round 4, F1: a raw {@code %zz} escape in the query string fails Tomcat's
+	 * parameter parsing with {@code InvalidParameterException} without ever reaching the
+	 * controller — it was surfacing as a generic 500. Malformed input must be 400 Problem
+	 * Details (D12/D13) with a generic detail. {@code java.net.http.HttpClient} validates
+	 * the URI before sending, so the request line goes over a plain {@link Socket}.
+	 */
+	@Test
+	void rawInvalidPercentEscapeInQueryStringReturns400ProblemDetails() throws Exception {
+		String request = "GET /api/v1/events?cursor=%zz HTTP/1.1\r\n"
+				+ "Host: localhost:" + port + "\r\n"
+				+ "X-API-Key: " + API_KEY + "\r\n"
+				+ "Connection: close\r\n"
+				+ "\r\n";
+		String response;
+		try (Socket socket = new Socket("localhost", port)) {
+			socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+			socket.getOutputStream().flush();
+			response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.ISO_8859_1);
+		}
+
+		assertThat(response).startsWith("HTTP/1.1 400");
+		assertThat(response).contains("application/problem+json");
+		// The Problem Details body: a fixed generic detail, no internals. The connection
+		// serves the body chunked (raw HTTP), so the JSON is picked out of the chunk
+		// framing; chunk markers and headers must carry no internals.
+		String problem = response.substring(response.indexOf('{'), response.lastIndexOf('}') + 1);
+		assertThat(JSON.readTree(problem).get("title").stringValue()).isEqualTo("Bad Request");
+		assertThat(problem).contains("Query string contains invalid percent-encoding");
+		assertThat(response).doesNotContain("org.apache");
+		assertThat(response).doesNotContain("InvalidParameterException");
+		assertThat(response).doesNotContain("at io.auditbox");
 	}
 
 	@Test

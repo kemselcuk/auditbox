@@ -36,6 +36,21 @@ class ApiKeyMatcherTest {
 		assertThat(ApiKeyMatcher.matches("local-dev-key", "  ")).isFalse();
 	}
 
+	/**
+	 * Review round 4, F3: surrounding whitespace on the configured side is stripped before
+	 * comparison (the servlet container trims header names' handling such that an untrimmed
+	 * configured key could otherwise never match); the provided header value is compared
+	 * exactly as received.
+	 */
+	@Test
+	void configuredKeyWithSurroundingWhitespaceMatchesTrimmedProvidedValue() {
+		assertThat(ApiKeyMatcher.matches(" key ", "key")).isTrue();
+		assertThat(ApiKeyMatcher.matches("\tkey\n", "key")).isTrue();
+		// The provided side is deliberately not stripped: only the configuration side may
+		// carry operator-convenience whitespace.
+		assertThat(ApiKeyMatcher.matches("key", " key ")).isFalse();
+	}
+
 	@Test
 	void blankOnBothSidesStillNeverMatches() {
 		assertThat(ApiKeyMatcher.matches(null, null)).isFalse();

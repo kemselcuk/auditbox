@@ -9,7 +9,9 @@ import org.springframework.beans.factory.InitializingBean;
 /**
  * Fails fast at startup in the {@code prod} profile (decision D5, plan task T5.1) when the
  * static API key is not configured: {@code auditbox.security.api-key}, bound from the
- * {@code API_KEY} environment variable, must be present and non-blank. The check runs on
+ * {@code API_KEY} environment variable, must be present and non-blank after stripping
+ * surrounding whitespace (a whitespace-only key could never match, review round 4, F3).
+ * The check runs on
  * context refresh, before any request can be served, and aborts the application with a
  * {@link IllegalStateException}.
  *
@@ -31,7 +33,10 @@ public class ApiKeyProdRequirement implements InitializingBean {
 	@Override
 	public void afterPropertiesSet() {
 		String key = environment.getProperty("auditbox.security.api-key");
-		if (key == null || key.isBlank()) {
+		// A whitespace-only key would survive a plain blank check but could itself never
+		// match: the configured side is stripped before comparison (review round 4, F3),
+		// so it must fail startup exactly like missing/blank.
+		if (key == null || key.strip().isEmpty()) {
 			throw new IllegalStateException(
 					"auditbox.security.api-key is missing or blank: set the API_KEY environment variable "
 							+ "(production startup requires a non-blank API key)");

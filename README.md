@@ -88,6 +88,15 @@ Both endpoints live under `/api/v1/events`. Machine-readable OpenAPI is served a
 enable them with the dev profile, e.g. `./mvnw spring-boot:run -Dspring-boot.run.profiles=local,dev`.
 Documentation requires the API key like every other non-health endpoint.
 
+> A plain browser visit of the Swagger UI cannot attach the `X-API-Key` header, so the UI
+> answers `401` and will not load. Open it through a header-capable client (a browser
+> extension or a local proxy adding the header), or fetch the machine-readable document
+> directly:
+>
+> ```bash
+> curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/v3/api-docs
+> ```
+
 ## Authentication
 
 Every request except `/actuator/health/**` must carry the static API key in the
@@ -105,6 +114,8 @@ values, `MessageDigest.isEqual`).
 - Missing or wrong key → `401 Unauthorized` as Problem Details
   (`application/problem+json`, `title: Unauthorized`, `detail` naming `X-API-Key`), never
   a log leak or 5xx. The key itself is never logged.
+- Exactly one `X-API-Key` header is expected per request; if a proxy or client emits the
+  header twice, the first value wins under the current servlet-container behavior.
 
 ### Record an event
 

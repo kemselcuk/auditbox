@@ -42,6 +42,20 @@ class ApiKeyProdRequirementTest {
 				});
 	}
 
+	/**
+	 * Review round 4, F3: a whitespace-only key would pass a plain {@code isBlank} fails
+	 * only after stripping — it must abort startup exactly like missing/blank, since it
+	 * could itself never match a header value.
+	 */
+	@Test
+	void prodStartupFailsWithWhitespaceOnlyApiKey() {
+		runner.withPropertyValues("auditbox.security.api-key=   ")
+				.run(context -> {
+					assertThat(context).hasFailed();
+					assertThat(context.getStartupFailure()).hasStackTraceContaining("auditbox.security.api-key");
+				});
+	}
+
 	@Test
 	void prodStartupSucceedsWithConfiguredApiKey() {
 		runner.withPropertyValues("auditbox.security.api-key=secure-prod-key")

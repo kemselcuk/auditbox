@@ -31,10 +31,12 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <ul>
  *   <li>rejects a missing key with 401 Problem Details ({@code application/problem+json},
- *       title "Unauthorized", detail naming the header),</li>
- *   <li>rejects a wrong key with the identical 401,</li>
- *   <li>accepts the correct key for write (201) and read (200),</li>
+ *       title "Unauthorized", detail naming the header, {@code WWW-Authenticate: X-API-Key}),</li>
+ *   <li>rejects a wrong key with the identical 401 without echoing the submitted key,</li>
+ *   <li>accepts the correct key for write (201) and read (200), including under a lowercase
+ *       header name,</li>
  *   <li>keeps {@code /actuator/health} public and every other actuator path protected,</li>
+ *   <li>requires the key for {@code /logout} too — logout is disabled (review round 4, F2),</li>
  *   <li>keeps {@code /v3/api-docs} (enabled in the test profile) protected,</li>
  *   <li>declares the apiKey SecurityScheme (header X-API-Key) in the OpenAPI document.</li>
  * </ul>
@@ -77,6 +79,8 @@ class ApiKeySecurityTest {
 		assertThat(response.statusCode()).isEqualTo(401);
 		assertThat(response.headers().firstValue("Content-Type").orElse(""))
 				.startsWith("application/problem+json");
+		// The challenge names the required header (no credential material).
+		assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).isEqualTo("X-API-Key");
 		JsonNode problem = JSON.readTree(response.body());
 		assertThat(problem.get("title").stringValue()).isEqualTo("Unauthorized");
 		assertThat(problem.get("status").intValue()).isEqualTo(401);
@@ -84,16 +88,44 @@ class ApiKeySecurityTest {
 	}
 
 	@Test
-	void wrongApiKeyIsRejectedWith401() throws Exception {
-		HttpResponse<String> response = getWithKey("/api/v1/events", "definitely-not-the-key");
+	void wrongApiKeyIsRejectedWith401WithoutEchoingTheSubmittedKey() throws Exception {
+		String wrongKey = "definitely-not-the-key";
+		// A wrong-key POST attempt for its would-be user: the request would have written an
+		// event for userId "t5-nobody", so the following row count proves nothing leaked
+		// through (the earlier GET-only variant of this assertion was vacuous).
+		HttpRequest attempt = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/events"))
+				.header("Content-Type", "application/json")
+				.header(ApiKeyAuthenticationFilter.HEADER, wrongKey)
+				.POST(HttpRequest.BodyPublishers.ofString(
+						"{\"eventId\":\"t5-nobody-should-not-exist\",\"userId\":\"t5-nobody\","
+								+ "\"eventType\":\"payment.settled\",\"source\":\"security-test\","
+								+ "\"occurredAt\":\"2026-10-18T12:00:00Z\"}", StandardCharsets.UTF_8))
+				.build();
+		HttpResponse<String> response = client.send(attempt, HttpResponse.BodyHandlers.ofString());
 
 		assertThat(response.statusCode()).isEqualTo(401);
 		assertThat(response.headers().firstValue("Content-Type").orElse(""))
 				.startsWith("application/problem+json");
 		assertThat(JSON.readTree(response.body()).get("title").stringValue()).isEqualTo("Unauthorized");
-		// The wrong key must not have written anything: no rows ever exist for the
-		// would-be user of this request.
+		// The 401 body must never echo the submitted (wrong) key.
+		assertThat(response.body()).doesNotContain(wrongKey);
+		// And nothing was written for the would-be user.
 		assertThat(eventRowCount("t5-nobody")).isEqualTo(0);
+	}
+
+	/**
+	 * Header names are case-insensitive per RFC 9110: a lowercase {@code x-api-key} must
+	 * authenticate exactly like {@code X-API-Key} (review round 4 nit).
+	 */
+	@Test
+	void lowerCaseHeaderNameAuthenticatesTheSameWay() throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/events"))
+				.header("x-api-key", API_KEY)
+				.GET()
+				.build();
+		HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+		assertThat(response.statusCode()).isEqualTo(200);
 	}
 
 	@Test
@@ -164,6 +196,22 @@ class ApiKeySecurityTest {
 	@Test
 	void unknownPathWithoutKeyIsStillRejected() throws Exception {
 		HttpResponse<String> response = getWithoutKey("/does-not-exist");
+
+		assertThat(response.statusCode()).isEqualTo(401);
+	}
+
+	/**
+	 * Review round 4, F2: logout is disabled, so {@code /logout} without a key is answered
+	 * by the entry point (401) and not by the default {@code LogoutFilter}, which would 302
+	 * to {@code /login?logout} as if logout were a permitted path.
+	 */
+	@Test
+	void logoutWithoutApiKeyReturns401Not302() throws Exception {
+		HttpResponse<String> response = client.send(
+				HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/logout"))
+						.GET()
+						.build(),
+				HttpResponse.BodyHandlers.ofString());
 
 		assertThat(response.statusCode()).isEqualTo(401);
 	}

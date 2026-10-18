@@ -27,6 +27,9 @@ import jakarta.servlet.DispatcherType;
  *       {@code /v3/api-docs} and {@code /swagger-ui/**} — requires the key,</li>
  *   <li>missing or wrong key &rarr; 401 Problem Details via
  *       {@link ApiKeyAuthenticationEntryPoint},</li>
+ *   <li>no logout: there is nothing to log out, and the default {@code LogoutFilter} would
+ *       otherwise answer {@code POST/GET /logout} without a key with a 302 redirect to
+ *       {@code /login?logout} instead of requiring the key (review round 4, F2),</li>
  *   <li>{@link DispatcherType#ERROR} dispatches are permitted so an authenticated request to
  *       an unmapped path or with an unsupported method still renders its 404/405 instead of
  *       being turned into a 401 by the error page; the original request still had to pass the
@@ -42,6 +45,7 @@ public class ApiKeySecurityConfiguration {
 	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyProperties properties) throws Exception {
 		return http
 				.csrf(csrf -> csrf.disable())
+				.logout(logout -> logout.disable())
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				.authorizeHttpRequests(authorize -> authorize
 						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
