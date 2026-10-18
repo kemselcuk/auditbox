@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -81,6 +82,74 @@ class SampleEventClientTest {
 		assertThatThrownBy(() -> SampleEventClient.Config.parse("--batch=" + "x".repeat(101)))
 				.isInstanceOf(IllegalArgumentException.class)
 				.hasMessageContaining("batch must be 1..100 characters");
+	}
+
+	// ---------------------------------------------------------------------
+	// --base-url validation and normalization (round 5, F2)
+	// ---------------------------------------------------------------------
+
+	@Test
+	void validHttpAndHttpsBaseUrlsAreAccepted() {
+		assertThat(SampleEventClient.Config.parse("--base-url=http://10.1.2.3:8080").baseUrl())
+				.isEqualTo("http://10.1.2.3:8080");
+		assertThat(SampleEventClient.Config.parse("--base-url=https://auditbox.internal").baseUrl())
+				.isEqualTo("https://auditbox.internal");
+	}
+
+	@Test
+	void trailingSlashesAreStrippedSoRequestPathsNeverDoubleTheSlash() {
+		assertThat(SampleEventClient.Config.parse("--base-url=http://localhost:8080/").baseUrl())
+				.isEqualTo("http://localhost:8080");
+		assertThat(SampleEventClient.Config.parse("--base-url=https://demo.example.org//").baseUrl())
+				.isEqualTo("https://demo.example.org");
+	}
+
+	@Test
+	void invalidBaseUrlsAreRejectedWithTheUsageError() {
+		// No scheme and no host: parsed as a URI, but not an absolute http/https URL.
+		assertThatThrownBy(() -> SampleEventClient.Config.parse("--base-url=localhost:8080"))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("base-url must be an absolute http/https URL");
+		// Unsupported scheme.
+		assertThatThrownBy(() -> SampleEventClient.Config.parse("--base-url=ftp://host"))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("base-url must be an absolute http/https URL");
+		// Absolute scheme but no host.
+		assertThatThrownBy(() -> SampleEventClient.Config.parse("--base-url=http://"))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("base-url must be an absolute http/https URL");
+		// Not a URI at all (contains a space).
+		assertThatThrownBy(() -> SampleEventClient.Config.parse("--base-url=http://ho st:8080"))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("base-url must be an absolute http/https URL");
+	}
+
+	// ---------------------------------------------------------------------
+	// Exit-code mapping (round 5, F4) and failure descriptions (F3)
+	// ---------------------------------------------------------------------
+
+	@Test
+	void exitCodeIsZeroWhenEveryRequestWasAccepted() {
+		assertThat(SampleEventClient.exitCode(Map.of())).isZero();
+		assertThat(SampleEventClient.exitCode(Map.of(200, 6))).isZero();
+		assertThat(SampleEventClient.exitCode(Map.of(200, 3, 201, 3))).isZero();
+	}
+
+	@Test
+	void exitCodeIsOneOnConnectionFailureOrStatusAtOrAbove400() {
+		assertThat(SampleEventClient.exitCode(Map.of(-1, 5))).isEqualTo(1);
+		assertThat(SampleEventClient.exitCode(Map.of(401, 1))).isEqualTo(1);
+		assertThat(SampleEventClient.exitCode(Map.of(500, 2))).isEqualTo(1);
+		assertThat(SampleEventClient.exitCode(Map.of(200, 4, 401, 1))).isEqualTo(1);
+	}
+
+	@Test
+	void failureWithoutMessageFallsBackToTheExceptionSimpleName() {
+		// A refused java.net TCP connection carries no message: the raw prints showed "null".
+		assertThat(SampleEventClient.describeFailure(new java.net.ConnectException()))
+				.isEqualTo("ConnectException");
+		assertThat(SampleEventClient.describeFailure(new java.net.ConnectException("Connection refused")))
+				.isEqualTo("Connection refused");
 	}
 
 	// ---------------------------------------------------------------------

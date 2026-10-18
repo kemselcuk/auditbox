@@ -71,6 +71,10 @@
     <button id="load-more" disabled>Load more</button>
     <span id="list-status"></span>
   </div>
+  <p class="muted" id="filter-note" style="margin:.2rem 0 0">
+    "Load more" reuses the filters from the first page; editing a filter resets the cursor
+    until a new first page is loaded.
+  </p>
   <div class="error" id="error-box">
     <strong id="error-title"></strong> <span id="error-status"></span>
     <div id="error-detail" class="muted"></div>
@@ -113,7 +117,7 @@
 <script>
 "use strict";
 
-const state = { nextCursor: null };
+const state = { nextCursor: null, filterQuery: null };
 
 const $ = (id) => document.getElementById(id);
 
@@ -201,7 +205,8 @@ function renderPage(page, append) {
     + (state.nextCursor ? ' <span class="muted">— nextCursor available</span>' : "");
 }
 
-function listPath(useCursor) {
+/** Query string built from the current filter fields. */
+function filterQuery() {
   const params = new URLSearchParams();
   const add = (name, id) => {
     const value = $(id).value.trim();
@@ -213,13 +218,46 @@ function listPath(useCursor) {
   add("occurredFrom", "f-occurred-from");
   add("occurredTo", "f-occurred-to");
   add("size", "f-size");
-  if (useCursor && state.nextCursor != null) { params.set("cursor", state.nextCursor); }
-  return "/api/v1/events?" + params.toString();
+  return params.toString();
 }
 
+/**
+ * Path for one list request. The first page snapshots the filter query for the whole walk;
+ * cursor requests reuse that snapshot and never read the (possibly edited) live fields.
+ */
+function listPath(useCursor) {
+  if (useCursor) {
+    if (state.filterQuery == null || state.nextCursor == null) { return null; }
+    const params = new URLSearchParams(state.filterQuery);
+    params.set("cursor", state.nextCursor);
+    return "/api/v1/events?" + params.toString();
+  }
+  state.filterQuery = filterQuery(); // snapshot taken when the first page is loaded
+  return "/api/v1/events?" + state.filterQuery;
+}
+
+/** Editing any filter invalidates the snapshot: reset the cursor until a new first page. */
+function filtersChanged() {
+  if (state.filterQuery == null) { return; }
+  state.filterQuery = null;
+  state.nextCursor = null;
+  $("load-more").disabled = true;
+  $("list-status").innerHTML = '<span class="muted">Filters changed — load the first page again</span>';
+}
+
+function freshEventIdFallback() {
+  // Date.now() alone can repeat across quick repeated submissions; add randomness.
+  return String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+}
+
+document.querySelectorAll(".filters input[type='text']").forEach((input) => {
+  input.addEventListener("input", filtersChanged);
+});
+
 async function loadEvents(useCursor) {
-  if (useCursor && state.nextCursor == null) { return; }
-  const result = await callAndShowProblem(listPath(useCursor), { method: "GET" });
+  const path = listPath(useCursor);
+  if (path == null) { return; }
+  const result = await callAndShowProblem(path, { method: "GET" });
   if (result && result.ok) { renderPage(result.data, Boolean(useCursor)); }
 }
 
@@ -230,7 +268,7 @@ async function sendEvent(event) {
   $("send-response").style.display = "none";
 
   const body = {
-    eventId: $("s-event-id").value.trim() || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+    eventId: $("s-event-id").value.trim() || freshEventIdFallback(),
     userId: $("s-user-id").value.trim(),
     eventType: $("s-event-type").value.trim(),
     source: $("s-source").value.trim(),
@@ -259,7 +297,7 @@ async function sendEvent(event) {
 }
 
 // Seed fields that only make sense with a per-session value.
-$("s-event-id").value = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+$("s-event-id").value = (crypto.randomUUID ? crypto.randomUUID() : freshEventIdFallback());
 $("s-occurred-at").value = new Date().toISOString();
 
 $("load-events").addEventListener("click", () => loadEvents(false));

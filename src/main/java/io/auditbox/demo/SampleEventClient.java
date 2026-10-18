@@ -14,6 +14,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -40,6 +41,10 @@ import java.util.TreeMap;
  * the default run's events are spread over the most recent minutes) and, for any other batch
  * id, a fixed function of the string over a deterministic {@code 2026} reference window (a
  * custom batch id is not a wall-clock value, so no recentness can be promised there).
+ *
+ * <p>Exit status: {@code 0} when every request was answered with {@code 2xx}, {@code 1}
+ * when at least one connection failed or any response status was {@code >= 400}, and
+ * {@code 2} for usage errors (misformatted or invalid arguments).
  */
 public final class SampleEventClient {
 
@@ -73,7 +78,8 @@ public final class SampleEventClient {
 
 		/**
 		 * Parses {@code --flag=value} arguments over the safe defaults. Unknown flags, blank
-		 * values or a count outside 1..10000 raise {@link IllegalArgumentException}; batch
+		 * values, a count outside 1..10000 or a non-absolute/non-http(s) base URL raise
+		 * {@link IllegalArgumentException}; batch
 		 * ids are restricted to 1..100 characters from {@code [A-Za-z0-9_-]} so the derived
 		 * eventIds need no JSON escaping and stay within the 128-character API limit.
 		 */
@@ -105,7 +111,36 @@ public final class SampleEventClient {
 			if (batch == null) {
 				batch = LocalDateTime.now(ZoneOffset.UTC).format(DEFAULT_BATCH_FORMAT);
 			}
+			baseUrl = parseBaseUrl(baseUrl);
 			return new Config(baseUrl, apiKey, count, batch);
+		}
+
+		/**
+		 * Validates and normalizes {@code --base-url}: it must be an absolute {@code http}
+		 * or {@code https} URI with a host. Trailing slashes are stripped so request paths
+		 * never become {@code //api/v1/events}. Violations raise
+		 * {@link IllegalArgumentException} (usage error, exit code 2).
+		 */
+		private static String parseBaseUrl(String value) {
+			URI uri;
+			try {
+				uri = URI.create(value);
+			}
+			catch (IllegalArgumentException e) {
+				throw new IllegalArgumentException(
+						"--base-url must be an absolute http/https URL, got '" + value + "'");
+			}
+			String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+			if (!uri.isAbsolute() || uri.getHost() == null
+					|| !(scheme.equals("http") || scheme.equals("https"))) {
+				throw new IllegalArgumentException(
+						"--base-url must be an absolute http/https URL, got '" + value + "'");
+			}
+			String normalized = value;
+			while (normalized.endsWith("/")) {
+				normalized = normalized.substring(0, normalized.length() - 1);
+			}
+			return normalized;
 		}
 
 		private static int parseCount(String value) {
@@ -149,11 +184,20 @@ public final class SampleEventClient {
 			System.exit(2);
 			return;
 		}
-		run(config, System.out);
+		int exit = run(config, System.out);
+		if (exit != 0) {
+			System.exit(exit);
+		}
 	}
 
-	/** Sends {@code count} sample events sequentially and prints a per-run summary. */
-	private static void run(Config config, PrintStream out) {
+	/**
+	 * Sends {@code count} sample events sequentially and prints a per-run summary.
+	 *
+	 * @return the process exit code: {@code 0} when every request was answered with
+	 * {@code 2xx}, {@code 1} when at least one connection failed or any response status was
+	 * {@code >= 400} (see {@link #exitCode(Map)}).
+	 */
+	private static int run(Config config, PrintStream out) {
 		Instant base = baseInstant(config.batch());
 		Map<Integer, Integer> statusCounts = new TreeMap<>();
 		List<String> eventIds = new ArrayList<>(config.count());
@@ -182,7 +226,7 @@ public final class SampleEventClient {
 				catch (java.io.IOException e) {
 					// Connection-level failure: record as status -1 and keep sending the rest.
 					statusCounts.merge(-1, 1, Integer::sum);
-					out.println("  [error] " + eventId + ": " + e.getMessage());
+					out.println("  [error] " + eventId + ": " + describeFailure(e));
 				}
 				catch (InterruptedException e) {
 					Thread.currentThread().interrupt();
@@ -200,6 +244,7 @@ public final class SampleEventClient {
 			out.println("  " + label + ": " + entry.getValue());
 		}
 		out.println("  eventIds    : " + String.join(", ", eventIds));
+		return exitCode(statusCounts);
 	}
 
 	/**
@@ -213,12 +258,37 @@ public final class SampleEventClient {
 		out.println("  --count=N        number of sample events (default " + Config.DEFAULT_COUNT + ")");
 		out.println("  --batch=ID       idempotency batch id; eventIds are demo-<batch>-<i>");
 		out.println("                   (default: a UTC timestamp so each plain run is a new batch)");
+		out.println("Exit status: 0 when every request got 2xx; 1 when at least one connection failed");
+		out.println("             or any response status was >= 400; 2 on usage errors (this text)");
 		out.println("Example: --count=10 --batch=demo-run-1 (rerun the same batch for idempotent 200s)");
 	}
 
 	// ---------------------------------------------------------------------
 	// Pure helpers (unit-tested without any network)
 	// ---------------------------------------------------------------------
+
+	/**
+	 * Human-readable one-line description of a per-request failure: the exception message
+	 * when there is one, otherwise the exception class simple name (some exceptions, e.g.
+	 * {@code ConnectException} from a refused connection, carry no message at all).
+	 */
+	static String describeFailure(Throwable failure) {
+		String message = failure.getMessage();
+		return message == null || message.isBlank()
+				? failure.getClass().getSimpleName()
+				: message;
+	}
+
+	/**
+	 * Pure exit-code mapping of one run's status counts (connection failures are recorded as
+	 * status {@code -1}): {@code 0} when everything was answered {@code 2xx}, {@code 1} when
+	 * at least one connection failed or any response status was {@code >= 400}.
+	 */
+	static int exitCode(Map<Integer, Integer> statusCounts) {
+		boolean failed = statusCounts.entrySet().stream()
+				.anyMatch(entry -> entry.getKey() == -1 || entry.getKey() >= 400);
+		return failed ? 1 : 0;
+	}
 
 	/** Deterministic eventId of the i-th event of a batch: {@code demo-<batch>-<i>}. */
 	static String eventId(String batch, int i) {

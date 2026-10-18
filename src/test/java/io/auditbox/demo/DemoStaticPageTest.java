@@ -52,13 +52,14 @@ class DemoStaticPageTest {
 		assertThat(response.statusCode()).isEqualTo(200);
 		assertThat(response.headers().firstValue("Content-Type").orElse("")).contains("text/html");
 		// The key input, the load-more (cursor) button and the send-event form the README
-		// page check relies on — plus the filters and the results table.
+		// page check relies on — plus the filters, the snapshot note and the results table.
 		assertThat(response.body())
 				.contains("id=\"api-key\"")
 				.contains("id=\"load-more\"")
 				.contains("id=\"send-event\"")
 				.contains("id=\"f-user-id\"")
 				.contains("id=\"f-occurred-from\"")
+				.contains("id=\"filter-note\"")
 				.contains("id=\"results\"");
 	}
 

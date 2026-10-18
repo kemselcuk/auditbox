@@ -12,20 +12,24 @@
 #   4. A fresh read page filtered on the demo user       -> 200 with the single row and
 #      nextCursor:null (nothing else was written for it).
 #
-# The script is deterministic and repeatable: every run generates one fresh eventId (so the
-# scenario-1 expectations hold on every run) and prints a stable transcript suitable for
-# pasting into the README. It exits non-zero as soon as any expectation fails.
+# The script is deterministic and repeatable: every run generates one fresh eventId that is
+# unique per process (wall-clock second plus the script PID, so even a rerun started within
+# the same second gets its own id), and prints a stable transcript suitable for pasting into
+# the README. It exits non-zero as soon as any expectation fails.
 #
 # Configuration (environment variables, all optional):
-#   BASE_URL      base URL of the running AuditBox            (default http://localhost:8080)
-#   API_KEY       value of the X-API-Key header               (default local-dev-key)
-#   DB_PORT       host port of the compose PostgreSQL         (default 5432)
-#   CONCURRENCY   number of parallel identical POSTs          (default 10)
-#   DB_CONTAINER  container used for the row-count psql call  (default auditbox-db)
+#   BASE_URL      base URL of the running AuditBox                    (default http://localhost:8080)
+#   API_KEY       value of the X-API-Key header                       (default local-dev-key)
+#   DB_PORT       host port used by the psql fallback without docker  (default 5432)
+#   CONCURRENCY   number of parallel identical POSTs                  (default 10)
+#   DB_CONTAINER  container used for the row-count psql call          (default auditbox-db)
+#   DB_NAME       database the row count queries                      (default auditbox)
+#   DB_USER       psql role for the row count                         (default auditbox)
+#   DB_PASSWORD   password for the fallback host psql call            (default auditbox)
 #
 # Row counts use docker exec against the compose database (container-internal connection,
-# so DB_PORT does not matter there); DB_PORT is only used by the fallback when docker is
-# unavailable, which then relies on a host `psql` binary.
+# so DB_PORT does not matter there); DB_PORT is the fallback host port, used only when
+# docker is unavailable and the row count then relies on a host `psql` binary.
 
 set -euo pipefail
 
@@ -37,8 +41,9 @@ DB_CONTAINER="${DB_CONTAINER:-auditbox-db}"
 DB_NAME="${DB_NAME:-auditbox}"
 DB_USER="${DB_USER:-auditbox}"
 
-# Fresh, run-unique identifiers: expectation 201-once would fail after a rerun with a fixed id.
-RUN_ID="dedupe-demo-$(date +%s)"
+# Fresh, per-process identifiers (unix second + PID: unique even when two runs start within
+# the same second): the 201-once expectation would fail on a rerun with a fixed id.
+RUN_ID="dedupe-demo-$(date +%s)-$$"
 EVENT_ID="${RUN_ID}"
 USER_ID="${RUN_ID}-user"
 RUN_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -86,14 +91,25 @@ db_event_count() {
   fi
 }
 
-# Preflight: the app must be reachable (health is public, no key needed).
-health="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/actuator/health")"
-[ "$health" = "200" ] || fail "the app is not reachable at $BASE_URL (health returned $health)"
+# Preflight 1: the app must be reachable (health is public, no key needed). curl's own
+# connection failure must neither abort here (set -e) nor print a raw curl error: the
+# prepared [FAIL] message below is the output for exactly that case.
+health="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/actuator/health" || true)"
+[ "$health" = "200" ] || fail "the app is not reachable at $BASE_URL (health returned '${health:-no response}')"
+
+# Preflight 2: the DB row-count capability must work before anything is written, so a later
+# row-count failure can never masquerade as a dedupe violation. The fresh RUN_ID cannot be
+# in the table yet, so the probe must report exactly zero rows.
+probe_rows="$(db_event_count "$RUN_ID" | tr -d '[:space:]')"
+case "$probe_rows" in
+  ''|*[!0-9]*) fail "cannot count rows in 'events' (needs docker with container '$DB_CONTAINER' or a host psql binary)" ;;
+esac
+[ "$probe_rows" = "0" ] || fail "expected 0 rows for the fresh eventId '$RUN_ID' before the first POST, got $probe_rows"
 
 say "AuditBox dedupe demo"
 say "  BASE_URL    : $BASE_URL"
-say "  API key     : set (${#API_KEY} characters, not echoed back)"
-say "  DB container: $DB_CONTAINER (DB host port: $DB_PORT)"
+say "  API key     : configured (not echoed back)"
+say "  DB container: $DB_CONTAINER (DB_PORT $DB_PORT = fallback host port without docker)"
 say "  Concurrency : $CONCURRENCY"
 say "  eventId     : $EVENT_ID   userId: $USER_ID   occurredAt: $RUN_TS"
 say ""

@@ -234,6 +234,10 @@ Summary
 ```
 
 The second run is the idempotent replay (same eventIds, identical content → `200`, D4).
+The client exits `0` when every request got a 2xx, `1` when a connection failed or any
+status ≥ 400 came back, and `2` on usage errors; invalid `--base-url` values (not an
+absolute http/https URL) are rejected up front as usage errors and trailing slashes are
+stripped so request paths never double the slash.
 
 ### 2. Browser demo (T6.2)
 
@@ -250,6 +254,8 @@ RFC 9457 Problem Details they really are (401 without a key, 409 conflicts with 
 
 The screenshot is a real run (headless Chrome against the local profile): the key was pasted,
 "Load first page" fetched the newest 20 events and the page reports `nextCursor available`.
+The screenshot's key field shows the documented local development default (`local-dev-key`),
+not a secret.
 
 ### 3. Dedupe script (T6.3)
 
@@ -257,7 +263,11 @@ One command reproducing the D4 concurrency behavior end to end — N parallel id
 POSTs (default 10: exactly one `201`, the rest `200`, exactly one DB row), an identical
 retry (`200`), different content on the same eventId (`409` with the `existingEvent`
 extension) and a fresh read page showing the single row. Exits non-zero on any failed
-expectation; configure with `BASE_URL`, `API_KEY`, `DB_PORT`, `CONCURRENCY`:
+expectation; every run uses a fresh, per-process eventId (wall-clock second plus PID), so
+back-to-back and even overlapping reruns stay valid. Configure with `BASE_URL`, `API_KEY`,
+`DB_PORT` (the fallback host port used only when docker is unavailable), `CONCURRENCY`,
+`DB_CONTAINER` (container for the row-count psql call) and, for that fallback,
+`DB_NAME`/`DB_USER`/`DB_PASSWORD`:
 
 ```bash
 ./scripts/dedupe-demo.sh
@@ -266,10 +276,10 @@ expectation; configure with `BASE_URL`, `API_KEY`, `DB_PORT`, `CONCURRENCY`:
 ```text
 AuditBox dedupe demo
   BASE_URL    : http://localhost:8080
-  API key     : set (13 characters, not echoed back)
-  DB container: auditbox-db (DB host port: 5432)
+  API key     : configured (not echoed back)
+  DB container: auditbox-db (DB_PORT 5432 = fallback host port without docker)
   Concurrency : 10
-  eventId     : dedupe-demo-1792357305   userId: dedupe-demo-1792357305-user   occurredAt: 2026-10-18T21:01:45Z
+  eventId     : dedupe-demo-1792358673-73124   userId: dedupe-demo-1792358673-73124-user   occurredAt: 2026-10-18T21:24:33Z
 
 == Scenario 1: 10 parallel identical POSTs for the fresh eventId ==
   status distribution: 1x201 (created) + 9x200 (idempotent) + 0 unexpected
@@ -283,11 +293,11 @@ AuditBox dedupe demo
 == Scenario 3: same eventId with different content ==
   status: 409 (expected 409)
   response body contains the existingEvent extension:
-{"detail":"an event with eventId 'dedupe-demo-1792357305' already exists with different content",
-"instance":"/api/v1/events","status":409,"title":"Conflict","existingEvent":{"id":259,
-"eventId":"dedupe-demo-1792357305","userId":"dedupe-demo-1792357305-user","eventType":"payment.settled",
-"source":"dedupe-demo","occurredAt":"2026-10-18T21:01:45Z","metadata":null,
-"receivedAt":"2026-10-18T21:01:45.813629Z"}}
+{"detail":"an event with eventId 'dedupe-demo-1792358673-73124' already exists with different content",
+"instance":"/api/v1/events","status":409,"title":"Conflict","existingEvent":{"id":622,
+"eventId":"dedupe-demo-1792358673-73124","userId":"dedupe-demo-1792358673-73124-user",
+"eventType":"payment.settled","source":"dedupe-demo","occurredAt":"2026-10-18T21:24:33Z",
+"metadata":null,"receivedAt":"2026-10-18T21:24:33.573705Z"}}
 
   rows in 'events' for the eventId after the conflict: 1 (expected 1)
   [PASS] first writer wins; different content is a 409, not an overwrite
