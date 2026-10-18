@@ -1,0 +1,13 @@
+# Keep the Docker build context minimal: only the Maven build inputs are needed.
+.git
+.github
+.idea
+target
+local-docs
+docs
+assets
+scripts
+.env
+.env.example
+*.md
+!README.md

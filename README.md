@@ -9,6 +9,8 @@ transcript.
 
 Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/plan.md).
 
+[![CI](https://github.com/kemselcuk/auditbox/actions/workflows/ci.yml/badge.svg)](https://github.com/kemselcuk/auditbox/actions/workflows/ci.yml)
+
 ## Overview
 
 - **Ingestion** (`POST /api/v1/events`) is idempotent per client-generated `eventId`: an
@@ -151,6 +153,40 @@ has the safe default `local-dev-key` — see [API](#api) below for the first POS
 - Application: `Ctrl-C`
 - Database, keeping data: `docker compose down`
 - Database, deleting data: `docker compose down -v`
+
+### Full stack in one command (optional app container)
+
+Instead of running the app on the host, you can start database + application together as
+containers (the `app` service is opt-in behind the `app` compose profile; the default
+`docker compose up -d db` workflow is unchanged):
+
+```bash
+DB_PORT=5433 docker compose --profile app up --build -d
+```
+
+`DB_PORT` only selects the database's **host** port (omit it when 5432 is free); the app
+container always reaches the database at `db:5432` inside the compose network. This builds the
+Docker image, starts `db` and waits for its health check before starting the app. When the app
+is up:
+
+```bash
+curl http://localhost:8080/actuator/health   # {"groups":["liveness","readiness"],"status":"UP"}
+```
+
+The same `local` profile defaults apply inside the container: the database connection uses the
+same `DB_NAME`/`DB_USER`/`DB_PASSWORD` defaults as the `db` service (`auditbox`, override via
+`DB_HOST`/`DB_PORT`/`.env`), and the API key defaults to `local-dev-key` — override with
+`API_KEY` in `.env` for anything reachable by others:
+
+```bash
+curl -sS -i -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"...","userId":"user-42","eventType":"payment.settled",
+       "source":"core-banking","occurredAt":"2026-10-18T12:00:00Z"}'
+```
+
+Stop the full stack, keeping data: `docker compose --profile app down`. Delete data as well:
+`docker compose --profile app down -v`.
 
 ## API
 
@@ -461,7 +497,8 @@ artefact, including the evidence that is deliberately live/manual (compose walk-
 browser demo, dedupe transcript) and the recorded evidence gaps.
 
 The demo transcripts and the screenshot above are real runs, not mock-ups; API responses in
-this README were captured from a live local run.
+this README were captured from a live local run. Continuous integration runs the same suite
+on every push/PR to `main` (badge at the top of this document).
 
 ## Decisions
 

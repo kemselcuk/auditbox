@@ -1,5 +1,6 @@
 # AuditBox local stack.
 # Start only the database (used with the app's "local" profile):  docker compose up -d db
+# Start the full stack (database + containerized app):           docker compose --profile app up --build -d
 # Stop and keep data:   docker compose down
 # Stop and delete data: docker compose down -v
 #
@@ -29,6 +30,31 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+
+  # Application container (opt-in, Milestone 9.2). Not started by the default
+  # db-only workflow: add the "app" profile, e.g. docker compose --profile app up --build -d.
+  app:
+    build: .
+    image: auditbox:local
+    container_name: auditbox-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # The app runs with the local profile inside the container; DB_HOST points
+      # at the compose "db" service instead of localhost.
+      SPRING_PROFILES_ACTIVE: local
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-auditbox}
+      DB_USER: ${DB_USER:-auditbox}
+      DB_PASSWORD: ${DB_PASSWORD:-auditbox}
+      # Same safe local default as the local profile (local-dev-key);
+      # override via .env for anything reachable by others.
+      API_KEY: ${API_KEY:-local-dev-key}
+    ports:
+      - "8080:8080"
 
 volumes:
   db-data:
