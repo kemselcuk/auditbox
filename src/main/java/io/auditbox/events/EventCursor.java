@@ -25,10 +25,11 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>The encoded {@code occurredAt} shape is the {@code OffsetDateTime#toString} form of the
  * microsecond-truncated UTC instant (D10/D12): a standard ISO-8601 UTC instant with
- * <em>variable</em> precision — the seconds field and/or the fractional part are omitted when
- * zero; a non-zero fraction is written with 3 digits when it is whole milliseconds and with 6
- * digits otherwise, keeping trailing zeros inside that group. It is deliberately not a
- * fixed-width ".SSSSSS" string; decode parses whatever precision the token carries.
+ * <em>variable</em> precision — the seconds field is omitted only when the seconds and the
+ * fraction are both zero; a non-zero fraction is written with 3 digits when it is whole
+ * milliseconds and with 6 digits otherwise, keeping trailing zeros inside that group. It is
+ * deliberately not a fixed-width ".SSSSSS" string; decode parses whatever precision the token
+ * carries.
  *
  * <p>The document shape is deliberately strict on decode — exactly the two fields, a
  * parseable date-time within the supported range (see {@link EventListQuery}), a non-blank,
@@ -47,17 +48,17 @@ final class EventCursor {
 
 	/**
 	 * Cursor length bound. The pre-parse bound must exceed the length of any cursor
-	 * {@link #encode} can emit for a write-side-legal event (the write-side eventId bound
-	 * is 128 characters, D12), so the API never emits a nextCursor it would refuse itself.
-	 * Worst case JSON payload: a 128-character eventId of nothing but control characters,
-	 * each of which JSON-escapes to the 6-character \-prefixed form (backslash + u00XX),
-	 * i.e. 128 &times; 6 = 768
-	 * characters; plus an {@code occurredAt} of up to ~30
-	 * characters (microsecond UTC instant; a 6-digit year renders as {@code +294276-...})
-	 * plus the ~30 bytes of fixed JSON overhead ({@code {"occurredAt":"","eventId":""}}):
-	 * ~828 JSON bytes. URL-safe Base64 expands this to {@code ceil(828 / 3) * 4 = 1104}
-	 * characters. 1200 leaves the generous margin above that bound while still rejecting
-	 * oversized garbage before any parsing (review round 3, F1).
+	 * {@link #encode} can emit. For values the current write contract accepts
+	 * ({@code occurredAt} 0001..9999, eventId up to 128 characters, D12): a 128-character
+	 * eventId of nothing but control characters JSON-escapes to 128 &times; 6 = 768
+	 * characters; the longest supported timestamp is 27 characters
+	 * ({@code 9999-12-31T23:59:59.999999Z}); fixed JSON overhead is ~30 bytes
+	 * ({@code {"occurredAt":"","eventId":""}}) — 825 JSON bytes, i.e. 1100 base64url
+	 * characters. Legacy/out-of-band positions with a 6-digit year (e.g. PostgreSQL's
+	 * maximum {@code +294276-...}) reach ~828 bytes, i.e. 1104 characters. 1200 leaves the
+	 * generous margin above both while still rejecting oversized garbage before any parsing
+	 * (review round 3, F1). Rows written by this API version can therefore never produce an
+	 * emitted-then-rejected cursor.
 	 */
 	private static final int MAX_CURSOR_LENGTH = 1200;
 

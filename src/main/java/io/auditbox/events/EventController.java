@@ -80,11 +80,11 @@ public class EventController {
 	 * {@code source} values are treated as absent filters (F6). The temporary basic-auth
 	 * chain still applies (Stage 5 replaces it, D5).
 	 *
-	 * <p>Repeated query parameters (review round 3, F5) are not explicitly rejected: the
-	 * servlet layer joins duplicate values with a comma, so {@code ?userId=a&userId=b}
-	 * behaves like {@code ?userId=a,b} — an exact-match filter that matches nothing in
-	 * practice. This is undocumented behavior of the servlet container, recorded here so
-	 * the contract is honest about it.
+	 * <p>Repeated query parameters (review round 3, F5) are not explicitly rejected: Spring
+	 * MVC's request-parameter binding joins duplicate values with a comma, so
+	 * {@code ?userId=a&userId=b} behaves like {@code ?userId=a,b} — an exact-match filter that
+	 * matches nothing in practice; repeated {@code size}/{@code cursor} values fail their own
+	 * validation with 400. This behavior is recorded here so the contract is honest about it.
 	 */
 	@Operation(summary = "List events", description = """
 			Returns one page of events, newest first (occurredAt DESC, eventId DESC). Filters

@@ -3,11 +3,14 @@ package io.auditbox.events;
 import java.time.Instant;
 
 /**
- * The supported occurrence range shared by the write and read paths (D1, D13): every stored
- * {@code occurredAt} and every queried bound or cursor position must fall inside it. Keeping a
- * single definition makes cursor encoding and decoding symmetric — the write path cannot store a
- * position the read path would refuse (review round 3b, F-1). The database can represent a wider
- * range; this is the API contract, not a storage limit.
+ * The supported occurrence range shared by the write and read paths (D1, D13): every
+ * {@code occurredAt} written by this API version, and every queried bound or cursor position,
+ * must fall inside it. Keeping a single definition makes cursor encoding and decoding
+ * symmetric — the write path cannot store a position the read path would refuse (review round
+ * 3b, F-1). Rows inserted out-of-band (or by versions before this validation existed) with an
+ * out-of-range {@code occurredAt} are not covered by that guarantee and would need a data
+ * migration or removal. The database can represent a wider range; this is the API contract,
+ * not a storage limit.
  */
 final class EventTimeRange {
 
