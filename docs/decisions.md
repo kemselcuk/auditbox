@@ -96,7 +96,8 @@ decision → rationale/alternatives.
 ## D10 — Canonical content hash (T2.2)
 
 - Decision: SHA-256 (lowercase hex, 64 chars) over a single canonical JSON object containing exactly
-  `eventId`, `userId`, `eventType`, `source`, `occurredAt` (normalized to the UTC instant string) and
+  `eventId`, `userId`, `eventType`, `source`, `occurredAt` (normalized to the UTC instant string,
+  truncated to microsecond precision) and
   `metadata` (canonicalized). Keys sorted at every level (`ORDER_MAP_ENTRIES_BY_KEYS`). Absent
   metadata ≡ explicit JSON null → JSON `null`; any present value (even `{}`) is different content.
   Numbers canonicalized as exact decimals (`stripTrailingZeros().toPlainString()`), so `1`, `1.0`
@@ -107,6 +108,12 @@ decision → rationale/alternatives.
 - Known limit: a metadata number that reached the tree as a JSON double canonicalizes through its
   shortest round-trip decimal (`Double.toString`). Stage 3 must read metadata with
   `USE_BIG_DECIMAL_FOR_FLOATS` to keep client decimals exact end to end.
+- Review round 1 (2026-10-18): `occurredAt` is truncated to microseconds before hashing —
+  PostgreSQL `timestamptz` stores microseconds, so hashing sub-microsecond nanoseconds would
+  false-409 a retry that echoes the API-returned `occurredAt`. The number-canonicalization unit
+  tests now run against both the default (DoubleNode) mapper and the `USE_BIG_DECIMAL_FOR_FLOATS`
+  (DecimalNode) mapper; exact high-precision behavior is proven only on the latter, matching the
+  known limit above.
 - Rationale: deterministic across formatting differences, so equivalent retries do not false-conflict.
   Rejected: hashing raw request bytes (formatting changes would break idempotency).
 
@@ -121,3 +128,7 @@ decision → rationale/alternatives.
   need (noted in the migration comment).
 - Evidence: schema test asserts columns/types/nullability/defaults/constraints/indexes on
   Testcontainers `postgres:18-alpine`; the compose database shows `flyway_schema_history` at v1.
+- Review round 1 (2026-10-18): both timestamp columns are kept with distinct intent — `received_at`
+  is the service receipt time returned by the API (DB clock at insert; a future importer may
+  override it to preserve an original receipt time), while `created_at` is row-insert bookkeeping.
+  They coincide today.

@@ -45,8 +45,8 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
-| T3.1 | DTO + Bean Validation; 201/200/409 semantics; Problem Details error model with field errors; OpenAPI schema | Validation tests green (400 on bad payload with field details) | pending |
-| T3.2 | Insert → catch unique violation → re-read → compare hash → 200 or 409 (with stored record summary) | Integration tests on real PostgreSQL: new → 201; identical repeat → 200 and exactly one row; different content → 409 with detail; **N concurrent identical requests → exactly one row, responses only {1×201, rest 200}, no 5xx**; concurrent different content → 1×201 + 1×409 | pending |
+| T3.1 | DTO + Bean Validation; 201/200/409 semantics; Problem Details error model with field errors; OpenAPI schema | Validation tests green (400 on bad payload with field details) | in progress |
+| T3.2 | Insert → catch unique violation → re-read → compare hash → 200 or 409 (with stored record summary) | Integration tests on real PostgreSQL: new → 201; identical repeat → 200 and exactly one row; different content → 409 with detail; **N concurrent identical requests → exactly one row, responses only {1×201, rest 200}, no 5xx**; concurrent different content → 1×201 + 1×409 | in progress |
 
 ### Stage 4 — GET /api/v1/events (filters + keyset pagination)
 
@@ -86,3 +86,14 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 ## Acceptance evidence matrix
 
 Filled in T7.1: each acceptance criterion mapped to its test/evidence artefact.
+
+## Review log
+
+- **Round 1** (2026-10-18, DeepSeek V4.1 Flash, read-only, stages 0–2): verdict **"sound with minor
+  issues"**. Major: F1 inert `test` profile; F2 production BigDecimal hash path unproven by tests.
+  Minor/nit: F3 UTF-8 proof, F4 `occurredAt` precision mismatch, F5 missing edge tests, F6 Jackson
+  2/3 coexistence note, F7 non-existent full-stack compose command, F8 README log excerpt, F9
+  present-tense overclaims, F10 duplicate timestamp columns. Closure: F1–F5 in commit `1b408d8`
+  (30 tests green, verified by the orchestrator), F6–F9 in `0374c5f`, F10 documented in D11. Two
+  forward-looking notes were accepted into Stage 3: the insert must run in its own transaction
+  boundary, and oversized metadata numbers must map to 400.
