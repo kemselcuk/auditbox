@@ -120,14 +120,17 @@ class RateLimiter {
 				lastNanos = now; // full buckets discard the idle time; no banking of history
 				return;
 			}
-			// Sub-unit refill rate: perMinute/60 sub-units per nanosecond, i.e.
-			// elapsed * perMinute / 60 sub-units over the elapsed time.
-			if (elapsed > Long.MAX_VALUE / (long) perMinute) {
-				tokensNano = capacityNano; // saturation: the idle time exceeded the capacity horizon
+			// Refill runs at perMinute/60 sub-units per nanosecond, so ANY bucket is
+			// completely full after 60 s of idle time. Checking that horizon first keeps
+			// this guard independent of the configured rate (review M10, F5: the previous
+			// Long.MAX_VALUE/perMinute guard fired early for absurdly large rates and
+			// over-credited the bucket).
+			if (elapsed >= 60_000_000_000L) {
+				tokensNano = capacityNano;
 				lastNanos = now;
 				return;
 			}
-			long refilled = elapsed * (long) perMinute / 60L;
+			long refilled = refillSubUnits(elapsed, perMinute);
 			if (tokensNano + refilled >= capacityNano) {
 				tokensNano = capacityNano;
 				lastNanos = now; // surplus idle time is discarded once the bucket is full
@@ -137,7 +140,25 @@ class RateLimiter {
 			// Continuous refill must not lose sub-second fractions: move the clock by only
 			// the time actually converted into tokens; an untouched late fraction of the
 			// elapsed time stays pending for the next call.
-			lastNanos += refilled * 60L / (long) perMinute;
+			lastNanos += advanceNanos(refilled, perMinute);
 		}
+	}
+
+	/**
+	 * {@code floor(elapsedNanos * perMinute / 60)} without long overflow: the direct product
+	 * can exceed {@link Long#MAX_VALUE} for very large rates, so the division is split. The
+	 * caller guarantees {@code elapsedNanos < 60e9} (the full-refill horizon).
+	 */
+	static long refillSubUnits(long elapsedNanos, int perMinute) {
+		return (elapsedNanos / 60L) * perMinute + (elapsedNanos % 60L) * perMinute / 60L;
+	}
+
+	/**
+	 * {@code floor(refilledSubUnits * 60 / perMinute)} without long overflow: the time the
+	 * credited refill is worth, used to advance the refill clock. The caller guarantees
+	 * {@code refilledSubUnits <= capacityNano} (at most {@code perMinute * 1e9}).
+	 */
+	static long advanceNanos(long refilledSubUnits, int perMinute) {
+		return (refilledSubUnits / perMinute) * 60L + (refilledSubUnits % perMinute) * 60L / perMinute;
 	}
 }

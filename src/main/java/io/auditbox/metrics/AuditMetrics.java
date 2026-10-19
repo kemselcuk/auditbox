@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
  *       (200, D4),</li>
  *   <li>{@code auditbox.events.conflicts} — same eventId with different content (409, D4),</li>
  *   <li>{@code auditbox.auth.failures} — tag {@code reason=missing|invalid} for a request
- *       that required the static API key and was rejected by the authentication entry point
+ *       that required the API key and was rejected by the authentication entry point
  *       (review F2); the key value itself is never used or logged, only the structural
  *       reason,</li>
  *   <li>{@code auditbox.rate.limited} — a request rejected with 429 by the per-source rate

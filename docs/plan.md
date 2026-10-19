@@ -3,11 +3,12 @@
 Owner-approved 2026-10-18. Executed in small tasks; no stage starts before the previous stage's
 tests are green.
 
-> Post-handoff M9 enhancements (CI, container, single fetch, metrics, correlation IDs, SBOM)
-> are recorded in D16 and the README; the stage tables below describe the original delivered
-> scope. M9.7 (Playwright E2E suite for the demo page, D17) is delivered behind the opt-in
-> `-Pe2e` Maven profile: `./mvnw -B -Pe2e verify` runs 5 E2E tests against a real Chromium,
-> while the default `./mvnw verify` keeps compiling nothing E2E-related and stays at 227 tests.
+> Post-handoff enhancements are recorded in the decision log and the README: M9 (CI,
+> container, single fetch, metrics, correlation IDs, SBOM — D16; Playwright E2E behind the
+> opt-in `-Pe2e` profile — D17; MIT license) and M10 hardening (per-source hashed key
+> registry — D18, in-memory rate limiting — D19, Dependabot — D20). The stage tables below
+> describe the original delivered scope; the current suite is 254 tests
+> (`./mvnw -B verify`), plus 5 Playwright tests under `-Pe2e`.
 
 **Verification loop per task:** brief → implementation by a delegated GLM-5.3-Flash child task →
 the orchestrator reviews the diff and runs the tests personally → fix rounds if needed → status
@@ -169,8 +170,8 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 |---|---|---|
 | T5.1 missing/wrong key → 401 Problem Details, `WWW-Authenticate`, no key echo, nothing stored | `ApiKeySecurityTest.missingApiKeyIsRejectedWithProblemDetails401`, `wrongApiKeyIsRejectedWith401WithoutEchoingTheSubmittedKey` (wrong-key POST writes nothing) | test |
 | T5.1 correct key → 201 write / 200 read (case-insensitive header) | `ApiKeySecurityTest.correctApiKeyAllowsWriteAndRead`, `lowerCaseHeaderNameAuthenticatesTheSameWay`, `duplicateApiKeyHeadersUseTheFirstValue` | test |
-| T5.1 constant-time comparison, null/blank/whitespace rules | `ApiKeyMatcherTest` (all 6 methods: equal/different, null/blank both sides, configured-side strip) | test (semantics only; constant-time is a code-level property, D14) |
-| T5.1 `prod` fails fast without a key | `ApiKeyProdRequirementTest.prodStartupFailsWithoutApiKey`, `prodStartupFailsWithBlankApiKey`, `prodStartupFailsWithWhitespaceOnlyApiKey`, `prodStartupSucceedsWithConfiguredApiKey` | test |
+| T5.1 constant-time comparison, null/blank rules (now the per-source registry) | `ApiKeyRegistryTest` (14: parsing/validation, rotation overlap, deny-all, malformed fail-fast without digest echo, first-match source) + `ApiKeyMatcherTest` (5: SHA-256 helper pinned to the documented digests) | test (semantics only; constant-time is a code-level property, D14/D18) |
+| T5.1 `prod` fails fast without a key | `ApiKeyProdRequirementTest.prodStartupFailsWithoutApiKeys`, `prodStartupFailsWithBlankApiKeys`, `prodStartupFailsWithWhitespaceOnlyApiKeys`, `prodStartupFailsWhenTheValueParsesToZeroEntries`, `prodStartupFailsWithAMalformedEntryNamingTheProperty`, `prodStartupSucceedsWithAValidEntry` | test |
 | T5.1 health and the static demo page (`/demo/**`) public; every API/actuator/docs path requires the key | `ApiKeySecurityTest.actuatorHealthIsPublicWithoutApiKey`, `otherActuatorPathRequiresApiKey`, `apiDocsWithoutApiKeyIsRejectedWhileEnabledInTest`, `unknownPathWithoutKeyIsStillRejected`; the demo-page exception: `DemoStaticPageTest.demoPageIsServedWithoutApiKeyAndContainsTheExpectedElements` | test |
 | T5.1 authenticated non-auth errors stay 404/405 (not 401); `/logout` answers 401 | `ApiKeySecurityTest.authenticatedRequestToUnknownPathReturns404NotAuthError`, `authenticatedUnsupportedMethodReturns405NotAuthError`, `logoutWithoutApiKeyReturns401Not302` | test |
 | T5.1 Swagger/OpenAPI dev-profile-only; OpenAPI security scheme present | `ApiKeySecurityTest.openApiDocumentDeclaresApiKeySecurityScheme`; dev-profile enablement is configuration (`application-dev.yml`, base disables springdoc) — configuration review + stage-5 live probes | test + doc + live |
@@ -192,9 +193,9 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 | Idempotent ingestion per `eventId` | T3.2 tests (200/409 semantics); `scripts/dedupe-demo.sh` end-to-end transcript (README) | test + live |
 | Concurrent duplicates leave exactly one row | `EventApiControllerTest.concurrentIdenticalRequestsProduceExactlyOne201AndExactlyOneRow`; dedupe script scenario 1 (`1x201 + 9x200 … rows: 1`) | test + live |
 | Stable keyset pagination | `paginationWalkTraversesAllEventsWithoutGapsOrDuplicates`, `cursorWalkIgnoresAnEventInsertedBetweenPages`, one-SELECT/no-COUNT + LIMIT tests | test |
-| Simple service auth (D5) | `ApiKeySecurityTest` (13), `ApiKeyMatcherTest` (6), `ApiKeyProdRequirementTest` (4) | test |
+| Simple service auth (D5, hardened by D18/D19) | `ApiKeySecurityTest` (14), `ApiKeyRegistryTest` (14), `ApiKeyMatcherTest` (5), `ApiKeyProdRequirementTest` (6), `RateLimiterTest` (8), `RateLimitPropertiesTest` (5), `RateLimitApiIntegrationTest` (2) | test |
 | OpenAPI per contract | `openApiDocsDescribeTheEventsPath`, `openApiDocsDescribeTheListEndpoint`, `openApiDocumentDeclaresApiKeySecurityScheme` | test |
-| Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 211 tests (T7.2 sign-off); runs require only Docker (Testcontainers), not a pre-started database | test |
+| Tests: full suite green on real PostgreSQL | `./mvnw verify` — latest run: 254 tests (M10 close; 211 at the T7.2 sign-off); runs require only Docker (Testcontainers), not a pre-started database | test |
 | Demo | three demo paths + README transcripts/screenshot (stage 6 rows above) | test + live |
 | README evidence (T7.2) | this README (Getting started, API with captured responses, Authentication, Demo transcripts/screenshot, Testing & evidence pointing here); orchestrator follows it literally on a clean checkout | doc + live |
 

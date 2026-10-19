@@ -114,6 +114,40 @@ class RateLimiterTest {
 	}
 
 	@Test
+	void aFullRefillHorizonOfSixtySecondsAppliesRegardlessOfTheRate() {
+		// 3 rpm: refill is 3/60 tokens per second, so a drained bucket is completely full
+		// after 60 s of idle time; the bucket is then burstable again with nothing banked.
+		RateLimitProperties properties = new RateLimitProperties(true, 3);
+		RateLimiter limiter = limiter(properties);
+
+		assertAllowed(limiter);
+		assertAllowed(limiter);
+		assertAllowed(limiter);
+		assertThat(rejectedRetryAfter(limiter)).isEqualTo(20);
+
+		now = 60_000_000_000L;
+		assertAllowed(limiter);
+		assertAllowed(limiter);
+		assertAllowed(limiter);
+		assertThat(rejectedRetryAfter(limiter)).isEqualTo(20); // full again, nothing banked
+	}
+
+	@Test
+	void extremeRatesRefillWithExactSplitArithmetic() {
+		// Review M10, F5: rates above ~153.7e6 used to trip the old overflow guard after
+		// Long.MAX_VALUE/rate ns and over-credit the bucket. The split arithmetic is exact
+		// and overflow-free for any int rate and any elapsed time below the 60 s horizon.
+		assertThat(RateLimiter.refillSubUnits(1_000_000L, 200_000_000)).isEqualTo(3_333_333_333_333L);
+		assertThat(RateLimiter.refillSubUnits(59_999_999_999L, 2_000_000_000))
+				.isEqualTo(1_999_999_999_966_666_666L);
+		assertThat(RateLimiter.advanceNanos(3_333_333_333_333L, 200_000_000)).isEqualTo(999_999L);
+		// The clock advance never exceeds the elapsed time that produced the refill.
+		long elapsed = 59_999_999_999L;
+		assertThat(RateLimiter.advanceNanos(RateLimiter.refillSubUnits(elapsed, 2_000_000_000), 2_000_000_000))
+				.isLessThanOrEqualTo(elapsed);
+	}
+
+	@Test
 	void aDisabledLimiterNeverConsumesOrRejects() {
 		// enabled=false accepts any requests-per-minute value without validation.
 		RateLimitProperties properties = new RateLimitProperties(false, 0);

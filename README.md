@@ -23,8 +23,9 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   are stable under concurrent inserts.
 - **Single fetch** (`GET /api/v1/events/{eventId}`) returns one stored record, or `404`
   Problem Details for an unknown `eventId`.
-- **Metrics**: Micrometer counters for created/replayed/conflicted events and failed API-key
-  checks, exposed through the key-protected `/actuator/metrics` endpoint.
+- **Metrics**: Micrometer counters for created/replayed/conflicted events, failed API-key
+  checks and rate-limit rejections, exposed through the key-protected `/actuator/metrics`
+  endpoint.
 - **Correlation**: every request gets an `X-Request-Id` (echoed from a safe incoming value or
   generated), carried in the response header and the MDC of every log line; `prod` logs ECS
   JSON to the console.
@@ -35,7 +36,7 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
-is [docs/decisions.md](docs/decisions.md) (D1–D18).
+is [docs/decisions.md](docs/decisions.md) (D1–D20).
 
 ## What this is / is not
 
@@ -91,7 +92,7 @@ Components (source layout under [src/main/java/io/auditbox](src/main/java/io/aud
 
 | Package | Role |
 |---|---|
-| `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter`, constant-time `ApiKeyMatcher`, `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details |
+| `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter` + per-source `ApiKeyRegistry` (constant-time digest comparison), `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details, `RateLimiter`/`RateLimitFilter` (per-source 429s) |
 | `events` | `EventController` (POST/GET), `EventService`/`EventInsertService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
 | `demo` | sample-event client (JDK only) |
 
@@ -432,28 +433,35 @@ the events API.
   `RATE_LIMIT_ENABLED=false` disables limiting entirely and accepts any value.
 - Rejection (`429`): `application/problem+json` with title `Too Many Requests` and a
   generic detail (no key material, no source name) plus a `Retry-After` header with the
-  whole seconds until at least one token is available (rounded up, always ≥ 1):
+  whole seconds until at least one token is available (rounded up, always ≥ 1). Real run
+  with `RATE_LIMIT_REQUESTS_PER_MINUTE=3` and the two-source setup shown below — the first
+  three POSTs are `201`, the fourth is:
 
 ```text
 HTTP/1.1 429
-Retry-After: 19
+X-Request-Id: be5a64f3-c0d4-4a41-b2c6-f5958d0f275d
+Retry-After: 20
 Content-Type: application/problem+json;charset=UTF-8
 
 {"type":"about:blank","title":"Too Many Requests","status":429,
  "detail":"Rate limit exceeded for this source. Retry after the indicated number of seconds."}
 ```
 
-- Each `429` increments the untagged counters `auditbox.rate.limited` (see
-  [Observability](#observability)) — exactly once per rejection.
+- Each `429` increments the untagged counter `auditbox.rate.limited` (see
+  [Observability](#observability)) — exactly once per rejection. The same run, reading the
+  counter with the *second* source's key (a separate bucket, so the read itself is not
+  limited):
+
+```bash
+# API_KEYS="local-dev:<digest of local-dev-key>,second:<digest of rate-key-b>"
+curl -sS -H "X-API-Key: rate-key-b" http://localhost:8080/actuator/metrics/auditbox.rate.limited
+# {"availableTags":[],"measurements":[{"statistic":"COUNT","value":1.0}],
+#  "name":"auditbox.rate.limited"}
+```
+
 - **Single instance only:** the buckets live in this process's memory, so the limit is per
   process. A multi-instance deployment would multiply the effective limit per source and
   would need a shared store (e.g. Redis) — deliberately out of scope (D19).
-
-```bash
-curl -sS -H "X-API-Key: rate-key-b" http://localhost:8080/actuator/metrics/auditbox.rate.limited
-# {"availableTags":[],"measurements":[{"statistic":"COUNT","value":2.0}],
-#  "name":"auditbox.rate.limited"}
-```
 
 ### Key rotation (D18)
 
@@ -671,9 +679,10 @@ per class:
 | `RequestIdFilterTest` | correlation filter: safe-pattern decision boundaries (echo verbatim vs. generated UUID, length 1/128/129), unsafe-id scrubbing over real HTTP, echo on 401 responses (milestone 9.5) |
 | `EventCursorTest` | cursor codec unit tests: round trips and every strict rejection (T4.1/T4.2) |
 | `ValidMetadataValidatorTest` | metadata number bounds: canonical and stored form boundaries (D10/D12; rejection is allocation-free by design — a code-level property, not a timing test) |
-| `ApiKeySecurityTest` | 401/401/201 pattern, key echo, duplicate-header first-value, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
-| `ApiKeyMatcherTest` | matcher unit rules: equality, null/blank, whitespace handling (T5.1; constant-time is a code-level property, D14) |
-| `ApiKeyProdRequirementTest` | prod fail-fast: missing/blank/whitespace key, success with a key (T5.1) |
+| `ApiKeySecurityTest` | 401/401/201 pattern over real HTTP with the per-source registry, key echo, duplicate-header first-value, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1, M10.1/D18) |
+| `ApiKeyRegistryTest` | per-source registry: parsing/validation of `source:sha256hex`, trimming and case normalization, rotation overlap (same source twice), deny-all for blank values, malformed entries failing with the entry index and no digest echo, first-match source resolution (M10.1/D18) |
+| `ApiKeyMatcherTest` | digest helper: SHA-256 over UTF-8, pinned to the documented local/test digest constants (T5.1, M10.1/D18) |
+| `ApiKeyProdRequirementTest` | prod fail-fast: missing/blank/whitespace/zero-entry/malformed property aborts startup, a valid entry starts (T5.1, M10.1/D18) |
 | `RateLimiterTest` | token bucket arithmetic with a fake clock: burst, exact Retry-After, exact interval refill, per-source isolation, rejection side effects (M10.2/D19) |
 | `RateLimitPropertiesTest` | config validation: 0/negative aborts startup naming the property; disabled accepts any value (M10.2/D19) |
 | `RateLimitApiIntegrationTest` | real-HTTP 200/200/429 limit sequence, Retry-After ≥ 1, problem+json body, other-source pass, 401 for key-less, public health, counter delta (M10.2/D19) |
