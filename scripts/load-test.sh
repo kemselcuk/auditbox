@@ -42,10 +42,11 @@ health="$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/actuator/health" || 
   exit 1
 }
 
-# Compile once if the generator class is not built yet (build only — no service is started).
-if [ ! -f target/classes/io/auditbox/demo/LoadGenerator.class ]; then
-  ./mvnw -q compile
-fi
+# Always run the incremental compile: the previous "only if the class is missing" check
+# ran stale classes after a source edit (review F13). Maven's incremental build is quick.
+# (The API key is passed on the java command line; it is the documented dev/CI key here —
+# for a real secret prefer the environment and a dedicated wrapper.)
+./mvnw -q compile
 
 args=(--base-url="$BASE_URL" --api-key="$API_KEY" --requests="$REQUESTS" \
       --concurrency="$CONCURRENCY" --timeout-seconds="$TIMEOUT_SECONDS")

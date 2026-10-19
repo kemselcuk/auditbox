@@ -16,7 +16,9 @@ import jakarta.persistence.Table;
 import tools.jackson.databind.JsonNode;
 
 /**
- * JPA entity mapped exactly to the {@code events} table of {@code V1__create_events.sql}
+ * JPA entity mapped exactly to the {@code events} table of
+ * {@code V1__create_events.sql} (schema) and {@code V2__partition_events.sql} (monthly
+ * RANGE partitions on {@code occurred_at}, PK {@code (occurred_at, id)}; D21)
  * (plan tasks T2.1 and T3.1/T3.2, decision D11). The schema is owned by Flyway and
  * Hibernate only validates ({@code ddl-auto: validate}).
  *

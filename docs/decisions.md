@@ -549,7 +549,14 @@ decision → rationale/alternatives.
     out-of-band inserts); it can now also fire on the `(occurred_at, event_id)` index.
     Since F1 it is caught OUTSIDE the failed attempt transaction (`EventService` holds no
     transaction), which then resolves the committed winner in a fresh read transaction —
-    one connection at a time, never two.
+    one connection at a time, never two. The index only covers the same
+    `(occurredAt, eventId)` pair: an out-of-band write with the same eventId but a
+    DIFFERENT occurredAt is not detected by it — the advisory lock is the API's guarantee,
+    and direct database writers must respect the same eventId discipline (D21).
+  - **V2 is an offline migration (review note F10):** it renames the old table, copies its
+    rows once and drops it in one script. Stop the application (all writers) before running
+    it; a rolling upgrade with an older instance still writing during the copy can lose
+    those writes, and an older instance writing after the swap bypasses the advisory lock.
   - Index set on the partitioned parent: `uq_events_event_id (occurred_at, event_id)` (kept
     name), `ix_events_occurred_at_event_id (occurred_at DESC, event_id DESC)` (D3),
     `ix_events_user_id`, `ix_events_event_type`, `ix_events_source`, and — NEW — a
@@ -715,15 +722,18 @@ decision → rationale/alternatives.
   - Bounded parallelism: exactly `--concurrency` worker virtual threads pull the next index
     from a shared cursor, so no more than `--concurrency` requests are ever in flight —
     the reported concurrency IS the actual bound.
-  - Measurement: per-request latency around the blocking send; per wave and in total the
-    completed count, wall time and throughput (completed / wall seconds), the status
-    distribution grouped into `200/201/409/429/5xx/other/connection errors`, and latency
-    p50/p95/p99/max over the sorted samples. The percentile math is linear interpolation
+  - Measurement: per-request latency around the blocking send; per wave the completed
+    count, wall time and throughput (completed / wall seconds), the status distribution
+    grouped into `200/201/409/429/5xx/other/connection errors`, and latency
+    p50/p95/p99/max over the sorted samples (the total block repeats the counts but not
+    the latency). The percentile math is linear interpolation
     between closest ranks — a small pure JDK function (`percentile()`), unit tested; no
     statistics library.
   - Usage errors: validated flags with clear messages and the sample client's exit codes —
-    0 all 2xx, 1 connection failure or any status ≥ 400, 2 usage errors; no stack traces
-    for user errors.
+    0 only when at least one request completed and every status was 2xx, 1 when nothing
+    completed, a connection failed or any status was outside 2xx (3xx included), 2 usage
+    errors; no stack traces for user errors. An `--api-key` containing control characters
+    is a usage error (M11 review F5).
   - The generator never bypasses authentication or the rate limiter: every request carries
     `X-API-Key` and consumes a token. Load runs start the app with a raised
     `RATE_LIMIT_REQUESTS_PER_MINUTE` (the D19 default of 300/min would 429 them); the

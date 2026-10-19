@@ -129,14 +129,24 @@ class LoadGeneratorTest {
 	}
 
 	@Test
+	void apiKeyWithControlCharactersIsAUsageError() {
+		// A newline would make HttpClient reject every request at runtime; fail as a usage
+		// error up front instead (review F5).
+		assertThatThrownBy(() -> LoadGenerator.Config.parse("--api-key=abc\ndef"))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("control characters");
+	}
+
+	@Test
 	void payloadDependsOnlyOnRunIdAndIndexSoReplayIsByteIdentical() {
 		Instant base = SampleEventClient.baseInstant("run-1");
 		String first = LoadGenerator.payload("run-1", base, 7);
 		String second = LoadGenerator.payload("run-1", SampleEventClient.baseInstant("run-1"), 7);
 
 		// Wave 1 and wave 2 send the same eventId with identical content: idempotent 200,
-		// never 409 (D4).
-		assertThat(LoadGenerator.eventId("run-1", 7)).isEqualTo(LoadGenerator.eventId("run-1", 7));
+		// never 409 (D4). The eventId is deterministic and distinct per index.
+		assertThat(LoadGenerator.eventId("run-1", 7)).isEqualTo("load-run-1-7");
+		assertThat(LoadGenerator.eventId("run-1", 7)).isNotEqualTo(LoadGenerator.eventId("run-1", 8));
 		assertThat(second).isEqualTo(first);
 	}
 
@@ -200,8 +210,12 @@ class LoadGeneratorTest {
 
 	@Test
 	void exitCodeIsZeroOnlyWhenEveryRequestWasAnswered2xx() {
-		assertThat(LoadGenerator.exitCode(Map.of())).isZero();
+		// Nothing completed at all is a failure, not a vacuous success (review F5).
+		assertThat(LoadGenerator.exitCode(Map.of())).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(201, 3, 200, 2))).isZero();
+		assertThat(LoadGenerator.exitCode(Map.of(204, 1))).isZero();
+		// Any non-2xx response fails the run, 3xx included (review F5).
+		assertThat(LoadGenerator.exitCode(Map.of(302, 1))).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(-1, 1))).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(429, 7))).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(500, 1))).isEqualTo(1);

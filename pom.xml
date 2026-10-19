@@ -158,7 +158,7 @@
 	     dependency (classpath), the src/e2e/java test source root (added via
 	     build-helper-maven-plugin; the default build never compiles it), and a Surefire
 	     include filter so `./mvnw -B -Pe2e verify` executes only the E2E tests while the
-	     default `./mvnw verify` keeps running the existing suite unchanged (227 tests,
+	     default `./mvnw verify` keeps running the existing suite unchanged (320 tests,
 	     no browser download, no extra artifacts). -->
 	<profiles>
 		<profile>

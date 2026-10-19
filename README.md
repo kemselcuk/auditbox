@@ -16,7 +16,9 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
 - **Ingestion** (`POST /api/v1/events`) is idempotent per client-generated `eventId`: an
   identical retry returns `200` with the stored record, different content on the same
   `eventId` is rejected with `409` — including under concurrency (20 identical parallel
-  requests produce exactly one row).
+  requests produce exactly one row). The idempotency record lives as long as its row:
+  retention (D22) is the deletion policy, so a retry after its partition was dropped is a
+  new event (201), and different content for that eventId can then be stored.
 - **Listing** (`GET /api/v1/events`) filters by `userId`, `eventType`, `source` and
   `occurredAt` range, orders newest first, and pages with an opaque keyset cursor. Each page
   request is a single `SELECT` capped at `size + 1` rows; there is no total count, and pages
@@ -168,6 +170,26 @@ into place by moving rows and attaching counts as created)
 caveat** (every replica would run the job — disable it or stagger the cron on extra
 replicas): [docs/decisions.md](docs/decisions.md) D22.
 
+**Upgrade note:** retention is deletion by design. With the default `months=24`, the first
+startup after M11.2 drops every monthly partition older than 24 months (the V2 migration
+creates a window starting 25 months back), and rows in `events_default` older than the
+cutoff are deleted in bounded batches. V2 is also an **offline migration** (it copies the
+old table once and drops it): stop the application before running it — a rolling upgrade
+with an older instance still writing during the copy can lose those writes.
+
+Real live check (`RETENTION_MONTHS=2`, fresh volume; abridged log lines):
+
+```text
+Partition maintenance starting: current month 2026-10, retention 2 month(s) (cutoff 2026-08-19...), lookahead 3 month(s)
+Partition maintenance done: 0 partition(s) created, 23 partition(s) dropped, 0 DEFAULT-partition row(s) deleted
+# next startup after adding an old DEFAULT row and dropping events_2027_01 by hand:
+Created monthly partition events_2027_01 for window [...]
+Moved 1 row(s) from events_default into the new monthly partition ...   # F2 path, when applicable
+Partition maintenance done: 1 partition(s) created, 0 partition(s) dropped, 1 DEFAULT-partition row(s) deleted
+# third startup:
+Partition maintenance done: 0 partition(s) created, 0 partition(s) dropped, 0 DEFAULT-partition row(s) deleted
+```
+
 ## Getting started
 
 Prerequisites: Java 21 LTS (build target `maven.compiler.release=21`; verified with
@@ -202,8 +224,8 @@ logs `<< Empty Schema >>` and `Migrating schema "public" to version "1 - create 
 
 ```text
 ... org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:5433/auditbox (PostgreSQL 18.6)
-... o.f.core.internal.command.DbValidate     : Successfully validated 1 migration (execution time 00:00.014s)
-... o.f.core.internal.command.DbMigrate      : Current version of schema "public": 1
+... o.f.core.internal.command.DbValidate     : Successfully validated 2 migrations (execution time 00:00.020s)
+... o.f.core.internal.command.DbMigrate      : Current version of schema "public": 2
 ... o.s.boot.tomcat.TomcatWebServer          : Tomcat started on port 8080 (http) with context path '/'
 ... io.auditbox.AuditBoxApplication          : Started AuditBoxApplication in 2.348 seconds (process running for 2.542)
 ```
@@ -743,14 +765,15 @@ Environment (all optional): `BASE_URL` (default `http://localhost:8080`), `API_K
 every eventId a second time — identical content, so the second wave must come back as
 idempotent `200`s, D4), `RUN_ID` (default `<epoch-second>-<pid>`, unique per process, so
 reruns never collide) and `TIMEOUT_SECONDS` (default 10). The script preflights the public
-health endpoint, compiles once if the generator class is missing, and `exec`s the
-generator so its exit code is the script's: `0` when every request got a 2xx, `1` on a
-connection failure or any status ≥ 400, `2` on usage errors. It never starts or stops
-services.
+health endpoint, runs the incremental compile, and `exec`s the generator so its exit code
+is the script's: `0` only when at least one request completed and every response was 2xx,
+`1` when nothing completed or any response was outside 2xx (3xx included) or a connection
+failed, `2` on usage errors. It never starts or stops services.
 
-The report prints, per wave and in total: completed / wall time / throughput, the status
-distribution grouped into `200/201/409/429/5xx/other/connection errors`, and latency
-p50/p95/p99/max (linear interpolation over the recorded samples). On 429s it hints at the
+The report prints, per wave: completed / wall time / throughput, the status distribution
+grouped into `200/201/409/429/5xx/other/connection errors`, and latency p50/p95/p99/max
+(linear interpolation over the recorded samples). The total block repeats completed / wall
+time / throughput / statuses; latency percentiles are per wave. On 429s it hints at the
 rate limiter; on connection errors at the base URL.
 
 ### Real results — a local baseline, machine/stack-specific, not an SLA
@@ -979,15 +1002,20 @@ it. Short summary:
   `auditbox.rate.limited` counter, and the explicit single-instance caveat.
 - **D20** hardening M10.3: Dependabot version updates for Maven and GitHub Actions
   (weekly, minor/patch grouped, no auto-merge).
-- **D19–D21 and D22** — anomalies of the same series already covered above: **D22**
-  retention & partition maintenance (M11.2): startup pass + daily cron; lookahead window
-  (`[month start UTC, next month start UTC)`); monthly partitions older than
+- **D21** partitioned storage (M11.1): monthly RANGE partitions on `occurred_at`
+  (`events_YYYY_MM` + `events_default`), PK `(occurred_at, id)`, unique
+  `(occurred_at, event_id)` index, a per-eventId transaction-scoped advisory lock that
+  keeps the D4 guarantee, and the documented per-partition `event_id` index trade-off.
+- **D22** retention & partition maintenance (M11.2): startup pass + daily cron; lookahead
+  window (`[month start UTC, next month start UTC)`); monthly partitions older than
   `RETENTION_MONTHS` dropped — the drop removes rows BY DESIGN (this is the retention
   policy) — and bounded batch deletes on `events_default`; a month that enters the
   window with rows already in `events_default` gets them moved into the new partition
   before it is attached (M11 review F2); disabled = strict no-op;
   four untagged retention counters; honest single-instance caveat (see
   [Retention and partitions](#retention-and-partitions-d22)).
+- **D23** hardening M11.3: the JDK-only load generator and the README's local baselines
+  (machine-specific, not an SLA).
 - **D23** load generator (M11.3): a JDK-only tool (`io.auditbox.demo.LoadGenerator` +
   `scripts/load-test.sh`, no k6/Gatling) with bounded virtual-thread concurrency, a
   deterministic `load-<run-id>-<i>` workload, `--replay` as a second idempotent wave, and

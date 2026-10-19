@@ -93,9 +93,9 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 ### Stage 11 — Post-handoff hardening: partitioned storage (M11)
 
 > Owner-approved post-handoff milestone; see `docs/decisions.md` D21. Orchestration and
-> scope: M11.1 schema conversion only — retention came as M11.2 (T11.2 below) and the
-> load test is M11.3 (out of scope here). API contract, response shapes and the
-> single-logical-table boundary are unchanged.
+> scope: M11.1 schema conversion (T11.1), retention/partition maintenance (T11.2) and a
+> JDK-only load test (T11.3). API contract, response shapes and the single-logical-table
+> boundary are unchanged.
 
 | Task | Deliverable | Acceptance criteria | Status |
 |---|---|---|---|
@@ -137,10 +137,10 @@ criteria mapped to the exact artefact that proves it. Evidence kinds:
 
 | Criterion | Evidence | Kind |
 |---|---|---|
-| T2.1 V1 migration applies on a clean database | `EventsSchemaMigrationTest.flywayAppliesV1ToACleanDatabase` (Flyway history at version 1) | test |
-| T2.1 schema asserted (columns/types/nullability/defaults/unique constraint) | `EventsSchemaMigrationTest.eventsTableHasTheExpectedColumnsAndTypes`, `eventIdHasTheUniqueConstraint` | test |
-| T2.1 unique constraint actually rejects duplicates (the race signal of D4) | `EventsSchemaMigrationTest.eventIdUniqueConstraintRejectsDuplicateEventIds` (SQLState 23505) | test |
-| T2.1 keyset + filter indexes exist, keyset order is `(occurred_at DESC, event_id DESC)` | `EventsSchemaMigrationTest.keysetAndFilterIndexesExist` | test |
+| T2.1 V1+V2 migrations apply on a clean database | `EventsSchemaMigrationTest.flywayAppliesV1AndV2ToACleanDatabase` (Flyway history at version 2) | test |
+| T2.1 schema asserted (columns/types/nullability/defaults/unique index) | `EventsSchemaMigrationTest.eventsTableHasTheExpectedColumnsAndTypes`, `uniqueEventIdIndexRejectsDuplicatesOfOccurredAtTimesEventId` (V2 replaced the table constraint with the partitioned unique index) | test |
+| T2.1 unique index actually rejects duplicates (the race signal of D4) | `EventsSchemaMigrationTest.uniqueEventIdIndexRejectsDuplicatesOfOccurredAtTimesEventId` (SQLState 23505) | test |
+| T2.1 keyset + filter indexes exist, keyset order is `(occurred_at DESC, event_id DESC)` | `EventsSchemaMigrationTest.keysetEventIdAndFilterIndexesExist`, `eventsTableIsRangePartitionedOnOccurredAt`, `initialMonthlyWindowAndDefaultPartitionExistWithTheRightBounds` | test |
 | T2.2 hash: key order/timezone normalization stable, canonical form pinned | `EventContentHasherTest.metadataKeyOrderDoesNotChangeHash`, `canonicalFormHasSortedKeysAtEveryLevel`, `sameInstantWithDifferentOffsetsHashesIdentically` | test |
 | T2.2 hash: microsecond truncation of `occurredAt` | `EventContentHasherTest.occurredAtFractionsHashAtMicrosecondPrecision`, `subMicrosecondFractionsTruncateDownToMicroseconds` (and end to end: `EventApiControllerTest.retryEchoingTheReturnedOccurredAtDoesNotFalseConflict`) | test |
 | T2.2 hash: different content → different hash | `EventContentHasherTest.changingEachContentFieldOnceChangesTheHash` (+ every number/metadata equivalence test asserting both directions) | test |

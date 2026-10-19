@@ -54,11 +54,12 @@ import java.util.stream.Collectors;
  * flight — the reported concurrency IS the actual bound.
  *
  * <p>Measurement: the latency of every completed request is taken around the blocking
- * {@code HttpClient.send}. The report prints, per wave and in total: the completed count,
- * the wall time and throughput (completed / wall seconds), the status distribution grouped
- * into {@code 200/201/409/429/5xx/other/connection errors} and the latency p50/p95/p99/max
- * over the sorted samples (linear interpolation, {@link #percentile} — pure JDK math, no
- * library).
+ * {@code HttpClient.send}. The report prints, per wave: the completed count, the wall time
+ * and throughput (completed / wall seconds), the status distribution grouped into
+ * {@code 200/201/409/429/5xx/other/connection errors} and the latency p50/p95/p99/max over
+ * the sorted samples (linear interpolation, {@link #percentile} — pure JDK math, no
+ * library). The run's total block repeats completed/wall/throughput/statuses; latency
+ * percentiles stay per wave.
  *
  * <p>Authentication and rate limiting: the generator always sends {@code X-API-Key} and
  * never bypasses the app's per-source rate limiter (D19, default 300 requests/min per
@@ -146,8 +147,21 @@ public final class LoadGenerator {
 				// unique even when two runs start within the same second.
 				runId = Instant.now().getEpochSecond() + "-" + ProcessHandle.current().pid();
 			}
-			return new Config(parseBaseUrl(baseUrl), apiKey, requests, concurrency, replay,
+			return new Config(parseBaseUrl(baseUrl), parseApiKey(apiKey), requests, concurrency, replay,
 					timeoutSeconds, runId);
+		}
+
+		/**
+		 * Validates {@code --api-key}: control characters (newlines in particular) would
+		 * make {@code HttpRequest.Builder.header} throw on every request; reject them as a
+		 * usage error (exit code 2) instead of letting the workers fail at runtime
+		 * (review F5).
+		 */
+		private static String parseApiKey(String value) {
+			if (value.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+				throw new IllegalArgumentException("--api-key must not contain control characters");
+			}
+			return value;
 		}
 
 		/**
@@ -330,14 +344,18 @@ public final class LoadGenerator {
 	/** One blocking POST with the run's key; records status and latency, never throws. */
 	private static void sendOne(Config config, HttpClient client, String payload, long[] latencies,
 			int index, ConcurrentHashMap<Integer, Integer> statusCounts) {
-		HttpRequest request = HttpRequest.newBuilder(URI.create(config.baseUrl() + "/api/v1/events"))
-				.header("Content-Type", "application/json")
-				.header("X-API-Key", config.apiKey())
-				.timeout(Duration.ofSeconds(config.timeoutSeconds()))
-				.POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
-				.build();
 		long began = System.nanoTime();
 		try {
+			// Request construction is inside the try on purpose (review F5): a runtime
+			// failure here (e.g. an invalid header value) must be RECORDED as a failed
+			// request, not kill the worker silently and let the run exit 0 with zero
+			// completed requests.
+			HttpRequest request = HttpRequest.newBuilder(URI.create(config.baseUrl() + "/api/v1/events"))
+					.header("Content-Type", "application/json")
+					.header("X-API-Key", config.apiKey())
+					.timeout(Duration.ofSeconds(config.timeoutSeconds()))
+					.POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
+					.build();
 			HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 			latencies[index] = System.nanoTime() - began;
 			statusCounts.merge(response.statusCode(), 1, Integer::sum);
@@ -348,6 +366,11 @@ public final class LoadGenerator {
 		}
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
+			statusCounts.merge(CONNECTION_ERROR, 1, Integer::sum);
+		}
+		catch (RuntimeException e) {
+			// Any other per-request failure (request construction, client rejection): count
+			// it as not completed so the report and the exit code reflect it (review F5).
 			statusCounts.merge(CONNECTION_ERROR, 1, Integer::sum);
 		}
 	}
@@ -438,12 +461,18 @@ public final class LoadGenerator {
 
 	/**
 	 * Pure exit-code mapping of one run's status counts (connection failures are recorded
-	 * as status {@link #CONNECTION_ERROR}): {@code 0} when everything was answered 2xx,
-	 * {@code 1} when at least one connection failed or any response status was {@code >= 400}.
+	 * as status {@link #CONNECTION_ERROR}): {@code 0} only when at least one request was
+	 * completed and EVERY response status was 2xx; {@code 1} when nothing completed, a
+	 * connection failed, or any response was outside 2xx (3xx included — review F5).
 	 */
 	static int exitCode(Map<Integer, Integer> statusCounts) {
+		if (statusCounts.isEmpty()) {
+			// No request produced a result: a run must never report success in that case.
+			return 1;
+		}
 		boolean failed = statusCounts.entrySet().stream()
-				.anyMatch(entry -> entry.getKey() == CONNECTION_ERROR || entry.getKey() >= 400);
+				.anyMatch(entry -> entry.getKey() == CONNECTION_ERROR
+						|| entry.getKey() < 200 || entry.getKey() > 299);
 		return failed ? 1 : 0;
 	}
 
