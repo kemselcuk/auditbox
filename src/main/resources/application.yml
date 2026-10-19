@@ -74,6 +74,21 @@ auditbox:
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
     requests-per-minute: ${RATE_LIMIT_REQUESTS_PER_MINUTE:300}
+  # Retention and automatic partition maintenance (M11.2/D22): at startup and daily at
+  # 03:30 server time the job creates the missing monthly partitions for the lookahead
+  # window (current month .. +lookahead), drops monthly partitions whose ENTIRE range is
+  # older than the retention window (dropping a partition removes its rows BY DESIGN —
+  # this is the retention mechanism, D22), and deletes older rows from the DEFAULT
+  # partition in bounded batches (batch size x max batches per pass). All time math is
+  # UTC. Single-instance note (D22): every instance would run the job — the DDL/DELETE
+  # are idempotent, but stagger the cron or disable the job on extra replicas.
+  retention:
+    enabled: ${RETENTION_ENABLED:true}
+    months: ${RETENTION_MONTHS:24}
+    lookahead-months: ${RETENTION_LOOKAHEAD_MONTHS:3}
+    default-delete-batch-size: ${RETENTION_DEFAULT_DELETE_BATCH_SIZE:1000}
+    max-batches-per-run: ${RETENTION_MAX_BATCHES_PER_RUN:10}
+    schedule-cron: "${RETENTION_CRON:0 30 3 * * *}"
 
 # OpenAPI/Swagger are disabled by default and enabled per profile (dev for humans,
 # test for the OpenAPI integration tests). Documentation requires the API key like any

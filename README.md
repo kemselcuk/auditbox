@@ -36,7 +36,7 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
-is [docs/decisions.md](docs/decisions.md) (D1–D20).
+is [docs/decisions.md](docs/decisions.md) (D1–D22).
 
 ## What this is / is not
 
@@ -101,10 +101,54 @@ Components (source layout under [src/main/java/io/auditbox](src/main/java/io/aud
 |---|---|
 | `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter` + per-source `ApiKeyRegistry` (constant-time digest comparison), `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details, `RateLimiter`/`RateLimitFilter` (per-source 429s) |
 | `events` | `EventController` (POST/GET), `EventService`/`EventInsertService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
+| `retention` | `PartitionMaintenanceService` + `PartitionMaintenanceScheduler`: keeps the monthly partition window healthy and applies retention (M11.2, D22) — startup pass + daily cron, lookahead partition creation, retention drops, bounded `events_default` deletes |
 | `demo` | sample-event client (JDK only) |
 
 The browser demo page is a static resource ([src/main/resources/static/demo](src/main/resources/static/demo/index.html))
 served by the app itself.
+
+### Retention and partitions (D22)
+
+The monthly window of [M11.1](#architecture) is maintained automatically by one job: it
+runs **once at application startup** (after Flyway, so the schema exists) and then
+**daily at 03:30 server time** (configurable). One pass does three things:
+
+1. **Ensures the lookahead window** — for every month from the current month (UTC)
+   through `RETENTION_LOOKAHEAD_MONTHS` months ahead, a missing `events_YYYY_MM`
+   partition is created with the standard bounds `[month start UTC, next month start
+   UTC)`, so the DEFAULT partition stays the (small) exception. The DDL is built only
+   from clock-derived months; an existing partition is never recreated (the pass is
+   idempotent).
+2. **Applies retention by dropping** — every monthly partition whose upper bound is
+   `<=` now(UTC) − `RETENTION_MONTHS` is dropped. **Dropping a partition removes its
+   rows with the table, by design: this delete IS the retention policy.** A partition
+   overlapping the window is kept; one whose upper bound is exactly the cutoff is
+   dropped (documented `<=` rule); the decision reads the real partition bounds from
+   the PostgreSQL catalog, never just the name.
+3. **Cleans the DEFAULT partition in bounded batches** — rows older than the same
+   cutoff are deleted from `events_default` in batches of
+   `RETENTION_DEFAULT_DELETE_BATCH_SIZE` rows, at most `RETENTION_MAX_BATCHES_PER_RUN`
+   batches per pass, so one pass never runs an unbounded DELETE. Monthly partitions
+   never see the DELETE.
+
+Configuration (`auditbox.retention.*`, env names in parentheses, defaults in
+`application.yml` and [.env.example](.env.example); an invalid value aborts startup
+naming the property — no clamping):
+
+| Property | Env | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `RETENTION_ENABLED` | `true` | `false` makes the job a strict no-op (no DDL, no deletes, no counters) |
+| `months` | `RETENTION_MONTHS` | `24` | Retention window in months (≥ 1 when enabled) |
+| `lookahead-months` | `RETENTION_LOOKAHEAD_MONTHS` | `3` | Months ahead the job keeps pre-created (≥ 0 when enabled) |
+| `default-delete-batch-size` | `RETENTION_DEFAULT_DELETE_BATCH_SIZE` | `1000` | Rows per DELETE batch on `events_default` |
+| `max-batches-per-run` | `RETENTION_MAX_BATCHES_PER_RUN` | `10` | Per-pass cap on those batches |
+| `schedule-cron` | `RETENTION_CRON` | `0 30 3 * * *` | Spring cron of the daily pass |
+
+The pass increments the untagged counters `auditbox.retention.partitions.created`,
+`auditbox.retention.partitions.dropped` and `auditbox.retention.default.rows.deleted`
+(see [Observability](#observability)). Full rationale, including the **single-instance
+caveat** (every replica would run the job — disable it or stagger the cron on extra
+replicas): [docs/decisions.md](docs/decisions.md) D22.
 
 ## Getting started
 
@@ -345,7 +389,10 @@ HTTP/1.1 404
   `auditbox.events.created` (201), `auditbox.events.replayed` (200), `auditbox.events.conflicts`
   (409) and `auditbox.auth.failures` with the closed tag set `reason=missing|invalid` — the
   key itself is never a metric name, tag, or value. The rate limiter adds `auditbox.rate.limited`
-  (one increment per emitted 429, untagged — D19).
+  (one increment per emitted 429, untagged — D19), and the retention job adds the three
+  untagged counters `auditbox.retention.partitions.created`,
+  `auditbox.retention.partitions.dropped` and `auditbox.retention.default.rows.deleted`
+  (M11.2, D22).
 
 ```bash
 curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/actuator/metrics/auditbox.events.created
@@ -681,6 +728,9 @@ per class:
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
 | `EventsSchemaMigrationTest` | Flyway V1+V2 apply on a clean database; the `events` parent is RANGE-partitioned on `occurred_at` with monthly partitions + default (right bounds); PK `(occurred_at, id)`; unique index `(occurred_at, event_id)` (rejecting SQLState 23505), index set incl. non-unique `event_id`; columns/types/nullability/defaults; partition routing of rows (T2.1, M11.1/D21) |
 | `EventPartitionedIdempotencyTest` | M11.1/D21: rows route to their monthly or the default partition through the write path; GET by eventId and the list endpoint unify partitions; same eventId with DIFFERENT occurredAt → exactly one row and 409 for the loser, sequential and concurrent (the property the unique index alone can no longer give); identical retry still replays 200 |
+| `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the three retention counters move exactly with each kind of work (deltas) |
+| `PartitionMaintenanceDisabledIntegrationTest` | M11.2/D22 disabled semantics: `auditbox.retention.enabled=false` makes the startup pass and a direct pass strict no-ops — the V2 window untouched, no lookahead creation, no counter increments |
+| `RetentionPropertiesTest` | M11.2/D22 config validation: months=0 / negative lookahead / zero batch size / zero max batches abort startup naming the property; disabled accepts any values (D22) |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
 | `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI (including the `{eventId}` fetch), 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
@@ -716,7 +766,7 @@ GitHub Actions (M10.3, D20); nothing auto-merges and every such PR runs the same
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D21), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D22), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -758,6 +808,13 @@ it. Short summary:
   `auditbox.rate.limited` counter, and the explicit single-instance caveat.
 - **D20** hardening M10.3: Dependabot version updates for Maven and GitHub Actions
   (weekly, minor/patch grouped, no auto-merge).
+- **D19–D21 and D22** — anomalies of the same series already covered above: **D22**
+  retention & partition maintenance (M11.2): startup pass + daily cron; lookahead window
+  (`[month start UTC, next month start UTC)`); monthly partitions older than
+  `RETENTION_MONTHS` dropped — the drop removes rows BY DESIGN (this is the retention
+  policy) — and bounded batch deletes on `events_default`; disabled = strict no-op;
+  three untagged retention counters; honest single-instance caveat (see
+  [Retention and partitions](#retention-and-partitions-d22)).
 
 ## Next steps
 
@@ -771,8 +828,10 @@ it. Short summary:
   limiting with 429/`Retry-After` landed (M10.2, see [Rate limiting](#rate-limiting-d19)
   and D19), and dependency automation landed (M10.3, D20).
 - **M11 partitioned storage (in progress):** monthly RANGE partitioning on `occurred_at`
-  with the per-eventId advisory lock landed (M11.1, D21); retention/partition maintenance
-  and a load test follow (M11.2/M11.3).
+  with the per-eventId advisory lock landed (M11.1, D21), and retention + automatic
+  partition maintenance landed (M11.2, see
+  [Retention and partitions](#retention-and-partitions-d22) and D22); the load test
+  (M11.3) remains.
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

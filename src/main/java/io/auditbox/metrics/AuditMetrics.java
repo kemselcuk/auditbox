@@ -21,6 +21,13 @@ import org.springframework.stereotype.Component;
  *   <li>{@code auditbox.rate.limited} — a request rejected with 429 by the per-source rate
  *       limiter (Milestone 10.2, D19). No tag: the source name is legitimate authenticated
  *       data, but caller-chosen values must not drive the counter cardinality.</li>
+ *   <li>{@code auditbox.retention.partitions.created} — a missing monthly partition in the
+ *       lookahead window was created by the partition-maintenance job (M11.2, D22),</li>
+ *   <li>{@code auditbox.retention.partitions.dropped} — a monthly partition fully older
+ *       than the retention window was dropped by the job; dropping the partition removes
+ *       its rows by design (this IS the retention policy, D22),</li>
+ *   <li>{@code auditbox.retention.default.rows.deleted} — rows older than the retention
+ *       window deleted from the DEFAULT partition in bounded batches (M11.2, D22).</li>
  * </ul>
  *
  * <p><code>Counter.increment()</code> keeps absolute counts — Micrometer drops increments
@@ -41,6 +48,15 @@ public class AuditMetrics {
 
 	/** One request rejected with 429 by the per-source rate limiter (D19); no tags. */
 	public static final String RATE_LIMITED = "auditbox.rate.limited";
+
+	/** One monthly partition created in the lookahead window by the maintenance job (D22); no tags. */
+	public static final String RETENTION_PARTITIONS_CREATED = "auditbox.retention.partitions.created";
+
+	/** One monthly partition dropped by retention; its rows are removed with it, by design (D22). */
+	public static final String RETENTION_PARTITIONS_DROPPED = "auditbox.retention.partitions.dropped";
+
+	/** Rows older than the retention window deleted from the DEFAULT partition, bounded batches (D22). */
+	public static final String RETENTION_DEFAULT_ROWS_DELETED = "auditbox.retention.default.rows.deleted";
 
 	/** The only tag key: completed by one of the two structural reason values below. */
 	public static final String AUTH_FAILURE_REASON_TAG = "reason";
@@ -83,5 +99,23 @@ public class AuditMetrics {
 	 */
 	public void rateLimited() {
 		registry.counter(RATE_LIMITED).increment();
+	}
+
+	/** One monthly lookahead partition created by the maintenance job (D22). */
+	public void retentionPartitionCreated() {
+		registry.counter(RETENTION_PARTITIONS_CREATED).increment();
+	}
+
+	/** One retention drop: the partition and its rows are gone by design (D22). */
+	public void retentionPartitionDropped() {
+		registry.counter(RETENTION_PARTITIONS_DROPPED).increment();
+	}
+
+	/**
+	 * Counts {@code rows} rows deleted from the DEFAULT partition by one bounded batch.
+	 * Batched so a pass that dies mid-way still reports exactly the rows it deleted.
+	 */
+	public void retentionDefaultRowsDeleted(long rows) {
+		registry.counter(RETENTION_DEFAULT_ROWS_DELETED).increment(rows);
 	}
 }

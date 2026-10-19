@@ -569,3 +569,67 @@ decision → rationale/alternatives.
   window bounds, monthly/default routing) and `EventPartitionedIdempotencyTest` (write-path
   routing, GET/list across partitions, different-occurredAt idempotency sequential and
   concurrent); the full suite and a live local run are recorded in the review report.
+
+## D22 — Retention and automatic partition maintenance (M11.2)
+
+- Context: D21 left the monthly partition window static (built once, at migration time:
+  current − 25 .. + 3 relative to the migration run) and removed nothing; retention and
+  automatic partition creation were deferred to M11.2. The owner approved the defaults
+  below as part of the M11.2 brief.
+- Decision:
+  - One `PartitionMaintenanceService` pass runs ONCE at application startup (triggered on
+    `ApplicationReadyEvent`, i.e. after Flyway has applied the schema) and then daily on
+    the configured cron (`RETENTION_CRON`, default `0 30 3 * * *`, server time). A thin
+    `@Scheduled`/event-listener wrapper delegates every trigger to the service (which is
+    testable with an injected `java.time.Clock`); an in-process `AtomicBoolean` skips
+    overlapping passes in the same JVM.
+  - **Ensure the forward window:** for every month from the current month (UTC) through
+    current + look-ahead (inclusive) a missing monthly partition is created with the
+    exact D21/D10 layout, `[month start UTC, next month start UTC)`, so the whole managed
+    window keeps the V2 shape and the DEFAULT partition keeps catching only out-of-window
+    values. The DDL is built exclusively from clock-derived months — never from user
+    input — with bound literals pinned to `+00`.
+  - **Retention = partition drop:** a monthly partition whose upper bound (read from the
+    PostgreSQL catalog, not derived from the name) is `<=` now(UTC) − retention months is
+    dropped with `DROP TABLE`. **Dropping a partition removes its rows together with the
+    table — by design: this delete IS the retention policy.** A partition overlapping the
+    window is kept; one whose upper bound is exactly the cutoff is droppable (the `<=`
+    rule); a partition whose bound cannot be parsed is skipped with a warning, never
+    dropped on a guess.
+  - **Bounded DEFAULT-partition deletes:** rows with `occurred_at <` the same cutoff in
+    `events_default` are deleted in batches of `default-delete-batch-size` rows, at most
+    `max-batches-per-run` batches per pass (the loop stops on a not-full batch), so one
+    pass never runs an unbounded DELETE. Monthly partitions never see this DELETE — they
+    are dropped whole.
+  - Configuration `auditbox.retention.*`: `enabled` (default true), `months` (default
+    24), `lookahead-months` (default 3), `default-delete-batch-size` (default 1000),
+    `max-batches-per-run` (default 10), `schedule-cron`. Values are validated on every
+    bind when the feature is enabled; invalid values abort startup with an
+    `IllegalStateException` naming the property (no clamping, same pattern as D19).
+  - Disabled semantics: `RETENTION_ENABLED=false` makes BOTH triggers strict no-ops — no
+    DDL, no deletes, no counter increments, regardless of what the other values say.
+  - Counters: untagged `auditbox.retention.partitions.created`,
+    `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted`.
+    No key material can reach a counter or a job log line (schema objects and counts
+    only).
+- **Single-instance note (explicit caveat):** the job has no distributed lock — in a
+  multi-replica deployment every replica would run it. All its effects are idempotent
+  (existence-checked `CREATE TABLE IF NOT EXISTS`, bound-based drops, idempotent batched
+  DELETEs), so concurrent replicas cannot corrupt state, but they would duplicate work,
+  and a losing racing pass may count a CREATE it did not end up performing. The
+  deployment guidance is therefore: run the job on ONE instance (`RETENTION_ENABLED=false`
+  on the extra replicas) or stagger their crons — honestly recorded rather than hidden
+  behind a claim.
+- Rationale: partition drop is O(1) metadata work versus deleting month-sized slices row
+  by row; the DEFAULT partition cannot be dropped at all (it is the catch-all for the
+  rest of the documented API range, D13), so it alone gets the bounded DELETE. Deleting
+  rows from monthly partitions row by row was rejected as strictly worse at the same
+  policy; keeping any child rows beyond the window was rejected (removal is the point of
+  retention).
+- Evidence: integration tests in `io.auditbox.retention` — `PartitionMaintenanceIntegrationTest`
+  (startup pass with a fixed clock: 9 exact drops + 4 exact creates; ensure with exact
+  bounds; second-pass idempotency; the three drop rules incl. the exact-`<=` boundary;
+  batch cap 3 × 100 and stop-on-partial cleanup; delta-based counter assertions),
+  `PartitionMaintenanceDisabledIntegrationTest` (disabled = no-op), `RetentionPropertiesTest`
+  (config validation naming each property) — plus the live acceptance run with
+  `RETENTION_MONTHS=2` recorded in the README/report.

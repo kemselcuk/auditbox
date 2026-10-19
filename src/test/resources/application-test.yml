@@ -8,6 +8,16 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+  # Test-only shutdown tweak: Spring Boot's graceful shutdown waits for active requests
+  # in EVERY cached test context when the forked JVM exits; with ~20 @SpringBootTest
+  # contexts that wait added up past surefire's 30-second forked-JVM exit timeout
+  # ("Surefire is going to kill self fork JVM. The exit has elapsed 30 seconds..."),
+  # making every full run end in a kill. Tests have no requests to drain at exit;
+  # immediate shutdown keeps the exit clean. Production keeps the framework default.
+  lifecycle:
+    timeout-per-shutdown-phase: 0s
+server:
+  shutdown: immediate
 
 # API key registry for the integration tests (D5/D18/T5.1): every request that needs
 # authentication sends X-API-Key: test-api-key. The configured value is the SHA-256
