@@ -13,6 +13,8 @@ permissions:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    # A stuck browser download must not hang for the default six hours (review round 2, F8).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -22,10 +24,22 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # Keeps the ~300 MB Chromium download out of repeat runs (review round 2, F2).
+      # The key carries the Playwright version; bump it together with pom.xml.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
+
       # Self-contained: the profile boots the app on a random port with a
-      # Testcontainers PostgreSQL. The test class installs Chromium itself
-      # (cached after the first run).
+      # Testcontainers PostgreSQL. The test class installs Chromium itself.
+      # PLAYWRIGHT_INSTALL_WITH_DEPS also installs the Linux system packages the
+      # browser needs, so the job does not depend on the runner image (review
+      # round 2, F3).
       - name: Run E2E tests
+        env:
+          PLAYWRIGHT_INSTALL_WITH_DEPS: "1"
         run: ./mvnw -B -Pe2e verify
 
       - name: Upload Playwright traces

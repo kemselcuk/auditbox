@@ -643,8 +643,9 @@ it. Short summary:
 - **Post-handoff M9 (done):** CI pipeline, container image + compose app profile,
   `GET /events/{eventId}`, Micrometer counters, `X-Request-Id` correlation and prod ECS logs,
   a CycloneDX SBOM (D16) and the MIT license (D17).
-- **Playwright E2E (approved):** browser-level tests for the demo page behind a separate
-  `-Pe2e` Maven profile (M9.7), so `./mvnw verify` keeps its current runtime.
+- **Playwright E2E (done):** browser-level tests for the demo page behind a separate
+  `-Pe2e` Maven profile (M9.7, D17) with a manually triggered workflow; the default
+  `./mvnw verify` keeps its 227-test runtime.
 - **M10 hardening (planned):** per-source hashed keys with rotation, rate limiting with
   429/`Retry-After`, dependency automation (Renovate/Dependabot).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite

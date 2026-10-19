@@ -378,3 +378,14 @@ decision → rationale/alternatives.
   BUILD SUCCESS; `./mvnw -B -Pe2e verify`: 5 tests, BUILD SUCCESS. The manual workflow has
   run green on GitHub for `624edfe` (102 s, `surefire-reports` artefact; no traces because no
   test failed).
+- Review round 2 (2026-10-19, read-only, M9.7/M9.8 delta): verdict **"sound with issues"**;
+  all findings closed — F1 the seed stamps are computed from one truncated base instant, so
+  adjacent events can no longer share a second and the exact-order assertion is
+  deterministic; F2 the manual workflow caches `~/.cache/ms-playwright` (actions/cache@v6),
+  which makes the "cached after the first run" claim true on CI; F3 CI installs Chromium with
+  `--with-deps` (driven by `PLAYWRIGHT_INSTALL_WITH_DEPS`), removing the runner-image
+  dependency; F4 the pom comment now states that the Boot parent pins build-helper 3.6.1 and
+  this profile uses 3.6.2 explicitly; F5 the README "Next steps" lists Playwright as done;
+  F6–F8 the trace wrapper no longer masks test failures, the Chromium install checks its exit
+  code and runs through the test JVM's own `java`, and the manual workflow has a 30-minute
+  timeout.

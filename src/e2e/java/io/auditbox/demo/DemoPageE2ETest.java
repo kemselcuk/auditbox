@@ -90,12 +90,27 @@ class DemoPageE2ETest {
 		// First run for a user/CI runner downloads Chromium (~300 MB), then it is a
 		// no-op against the local cache. It runs as an external process because
 		// Playwright's CLI.main itself calls System.exit, which would kill this
-		// (forked Surefire) JVM.
-		new ProcessBuilder("java", "-cp", System.getProperty("java.class.path"),
-				"com.microsoft.playwright.CLI", "install", "chromium")
-				.inheritIO().start().waitFor();
+		// (forked Surefire) JVM. The e2e workflow sets PLAYWRIGHT_INSTALL_WITH_DEPS
+		// so the Linux system packages are installed too (review round 2, finding 3).
+		List<String> command = new ArrayList<>(List.of(javaExecutable(), "-cp",
+				System.getProperty("java.class.path"), "com.microsoft.playwright.CLI", "install", "chromium"));
+		if (System.getenv("PLAYWRIGHT_INSTALL_WITH_DEPS") != null) {
+			command.add("--with-deps");
+		}
+		Process install = new ProcessBuilder(command).inheritIO().start();
+		int exitCode = install.waitFor();
+		if (exitCode != 0) {
+			// Fail fast with the real cause instead of a later "executable does not exist".
+			throw new IllegalStateException("Playwright Chromium install failed with exit code " + exitCode);
+		}
 		playwright = Playwright.create();
 		browser = playwright.chromium().launch();
+	}
+
+	/** The JVM that runs the tests, so the classpath always matches (review round 2, finding 7). */
+	private static String javaExecutable() {
+		String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
+		return Path.of(System.getProperty("java.home"), "bin", executable).toString();
 	}
 
 	@AfterAll
@@ -165,8 +180,8 @@ class DemoPageE2ETest {
 				Files.deleteIfExists(tracePath);
 			}
 		}
-		catch (IllegalStateException alreadyStopped) {
-			// Trace handling must never mask the test outcome.
+		catch (Exception alreadyStoppedOrUnwritable) {
+			// Trace handling must never mask the test outcome (review round 2, finding 6).
 		}
 	}
 
@@ -288,12 +303,16 @@ class DemoPageE2ETest {
 	private List<String> seedEvents(String userId, int count) throws Exception {
 		HttpClient client = HttpClient.newHttpClient();
 		List<String> eventIds = new ArrayList<>();
+		// One base instant for the whole batch: the stamps are strictly one second apart,
+		// so the server's keyset order (occurred_at DESC) matches eventIds exactly.
+		// Evaluating now() per iteration let two adjacent stamps collide in the same
+		// truncated second, which made the exact-order assertion flaky (review round 2,
+		// finding 1).
+		Instant base = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
 		for (int i = 0; i < count; i++) {
 			String eventId = uniqueSuffix("m9e7-event");
 			String eventType = (i == 0) ? "payment.settled" : "invoice.settled";
-			// One second apart so the server's keyset order (occurred_at DESC) is stable.
-			String occurredAt = Instant.now().minusSeconds(i).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-					.toString();
+			String occurredAt = base.minusSeconds(i).toString();
 			String metadata = (i == 0) ? ",\"metadata\":{\"amount\":" + (i + 1) + "}" : "";
 			String body = "{\"eventId\":\"" + eventId + "\",\"userId\":\"" + userId + "\",\"eventType\":\""
 					+ eventType + "\",\"source\":\"m9e7-e2e\",\"occurredAt\":\"" + occurredAt + "\""

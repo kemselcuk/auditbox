@@ -164,10 +164,9 @@
 				<plugins>
 					<!-- Adds src/e2e/java as an additional *test* source root. Only
 					     active under -Pe2e, so the default build never sees (or
-					     compiles) the E2E sources. For the same reason (profile-only
-					     wiring) the Spring Boot parent's version management does not
-					     pin build-helper-maven-plugin: 3.6.2 is the newest release
-					     per Maven Central. -->
+					     compiles) the E2E sources. The Spring Boot parent pins
+					     build-helper-maven-plugin 3.6.1; this profile uses 3.6.2,
+					     the newest release per Maven Central (review round 2, F4). -->
 					<plugin>
 						<groupId>org.codehaus.mojo</groupId>
 						<artifactId>build-helper-maven-plugin</artifactId>
