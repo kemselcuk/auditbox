@@ -113,7 +113,7 @@ served by the app itself.
 
 The monthly window of [M11.1](#architecture) is maintained automatically by one job: it
 runs **once at application startup** (after Flyway, so the schema exists) and then
-**daily at 03:30 server time** (configurable). One pass does three things:
+**daily at 03:30 server time** (configurable). One pass does four things:
 
 1. **Ensures the lookahead window** — for every month from the current month (UTC)
    through `RETENTION_LOOKAHEAD_MONTHS` months ahead, a missing `events_YYYY_MM`
@@ -124,14 +124,14 @@ runs **once at application startup** (after Flyway, so the schema exists) and th
    accepts any `occurredAt` in 0001-01-01..9999-12-31, so a client can write months
    beyond the window) cannot be created with a plain `CREATE TABLE ... PARTITION OF` —
    PostgreSQL rejects it while those rows are there. Such a month takes the
-   **move-then-attach** path instead (M11 review F2): the pass creates the standalone
-   table `events_YYYY_MM (LIKE events INCLUDING DEFAULTS)`, moves the range's rows out
-   of `events_default` (ALL of them, atomically — see the detach/move/attach sequence
-   below), and attaches the partition
-   with the standard bounds only once the range is empty — with rows left, it stays
-   detached for this pass and the next pass continues the move. One month's failure is
-   caught and logged; the later months of the window are still processed.
-2. **Applies retention by dropping** — every monthly partition whose upper bound is
+   **atomic move-then-attach** path instead (M11 review F2): in ONE transaction the pass
+   detaches `events_default`, recovers a legacy leftover table if one exists (deduping
+   its rows), creates the partition, moves ALL of the month's rows and re-attaches the
+   default — a failure rolls the whole transaction back and the next pass retries; rows
+   are never visible in a half-applied state. One month's failure is caught and logged;
+   the later months of the window are still processed.
+2. **Recovers legacy leftovers** — a standalone `events_YYYY_MM` table left by the old two-pass implementation is invisible through the parent; a window-independent sweep feeds it into the same atomic move (deduping `(occurred_at, event_id)` rows and logging any legacy same-eventId/different-occurredAt duplicates).
+3. **Applies retention by dropping** — every monthly partition whose upper bound is
    `<=` now(UTC) − `RETENTION_MONTHS` is dropped. **Dropping a partition removes its
    rows with the table, by design: this delete IS the retention policy.** A partition
    overlapping the window is kept; one whose upper bound is exactly the cutoff is
@@ -143,7 +143,7 @@ runs **once at application startup** (after Flyway, so the schema exists) and th
    bound is skipped (the partition is kept) with a warning. A failing `DROP` is caught
    per partition — one broken table does not abort the rest of the phase — and a phase
    failure keeps the counts already achieved in the logged summary (M11 review F6).
-3. **Cleans the DEFAULT partition in bounded batches** — rows older than the same
+4. **Cleans the DEFAULT partition in bounded batches** — rows older than the same
    cutoff are deleted from `events_default` in batches of
    `RETENTION_DEFAULT_DELETE_BATCH_SIZE` rows, at most `RETENTION_MAX_BATCHES_PER_RUN`
    batches per pass, so one pass never runs an unbounded DELETE. Monthly partitions
@@ -930,7 +930,7 @@ per class:
 | `EventsSchemaMigrationTest` | Flyway V1+V2 apply on a clean database; the `events` parent is RANGE-partitioned on `occurred_at` with monthly partitions + default (right bounds); PK `(occurred_at, id)`; unique index `(occurred_at, event_id)` (rejecting SQLState 23505), index set incl. non-unique `event_id`; columns/types/nullability/defaults; partition routing of rows (T2.1, M11.1/D21) |
 | `EventsV1WithDataMigrationTest` | M11 review F7: the automated V1-with-data migration — ONLY V1 applied to a dedicated database, seeded rows inside and outside the V2 initial window (metadata, explicit received_at/created_at), then V2: every row survives verbatim (ids and all timestamps), rows route to the right monthly/default partitions, PK `(occurred_at, id)` and the unique `(occurred_at, event_id)` index exist, the identity sequence continues at max(id)+1 |
 | `EventPartitionedIdempotencyTest` | M11.1/D21: rows route to their monthly or the default partition through the write path; GET by eventId and the list endpoint unify partitions; same eventId with DIFFERENT occurredAt → exactly one row and 409 for the loser, sequential and concurrent (the property the unique index alone can no longer give); identical retry still replays 200 |
-| `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the retention counters move exactly with each kind of work (deltas); review F2 — a month with rows in `events_default` is moved into the new partition and attached (no duplicate, later months still created, exact bounds), a move over the batch cap leaves the partition detached until the next pass completes and attaches it, and a failing month is caught per month without stopping the later months or the other phases |
+| `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the retention counters move exactly with each kind of work (deltas); review F2/F2-re-review — a month with rows in `events_default` is moved into the new partition and attached atomically (all rows visible through the parent immediately, no duplicate, later months still created, exact bounds), a large move completes in one pass, a legacy leftover is recovered even outside the window, legacy duplicate rows are deduped without failing, and a failing month rolls back without stopping the later months or the other phases |
 | `PartitionMaintenanceDisabledIntegrationTest` | M11.2/D22 disabled semantics: `auditbox.retention.enabled=false` makes the startup pass and a direct pass strict no-ops — the V2 window untouched, no lookahead creation, no counter increments |
 | `RetentionPropertiesTest` | M11.2/D22 config validation: months=0 / negative lookahead / zero batch size / zero max batches abort startup naming the property; disabled accepts any values (D22) |
 | `RetentionCronRegistrationTest` | M11 review F4: the daily cron is registered conditionally — disabled + invalid cron starts fine and registers no task; enabled + invalid cron aborts startup naming `auditbox.retention.schedule-cron`/`RETENTION_CRON`; enabled + valid cron registers exactly one cron task |

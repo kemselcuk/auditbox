@@ -8,7 +8,6 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -43,12 +42,12 @@ import io.auditbox.metrics.AuditMetrics;
  *       {@code occurred_at} values. A month whose range already holds rows in the
  *       DEFAULT partition (the API legally accepts any {@code occurredAt} in
  *       0001-01-01..9999-12-31, D13, so a client can write months beyond the window;
- *       M11 review F2) takes the move-then-attach path of
- *       {@link #moveDefaultRowsAndAttach(String, YearMonth, boolean)} instead of the
- *       plain {@code CREATE TABLE ... PARTITION OF} — those rows would violate the
+ *       M11 review F2) takes the atomic move-then-attach path
+ *       ({@link #moveDefaultRowsAndAttachAtomic(String, YearMonth, PhaseTotals)}) instead
+ *       of the plain {@code CREATE TABLE ... PARTITION OF} — those rows would violate the
  *       DEFAULT partition's updated constraint and fail the month. One month's failure
  *       is caught per month and logged; the later months of the window are still
- *       processed,</li>
+ *       processed, and a window-independent sweep recovers leftover standalone tables,</li>
  *   <li><b>Apply retention by dropping:</b> a monthly partition is droppable when its
  *       upper bound is {@code <=} now(UTC) − {@code months} (the whole range is older
  *       than the retention window; a partition overlapping the window is kept, one whose
@@ -277,9 +276,8 @@ public class PartitionMaintenanceService {
 	/**
 	 * Ensures one missing month of the window. Without DEFAULT-partition rows in the
 	 * month's range and without a leftover standalone table this is the plain DDL path;
-	 * otherwise the atomic move-then-attach path runs (review round 2, F2). Returns 1
-	 * when the month ends the pass attached (either path), 0 when the atomic pass failed
-	 * and rolled back (retried next pass).
+	 * otherwise the atomic move-then-attach path runs (review round 2, F2). Both paths
+	 * increment the pass totals; a failed atomic pass rolls back and is retried next pass.
 	 */
 	private void ensureMissingPartition(String partitionName, YearMonth month, PhaseTotals totals) {
 		boolean defaultRowsInRange = defaultPartitionHasRowsInRange(month);
@@ -346,14 +344,7 @@ public class PartitionMaintenanceService {
 			movedRows = moveTransaction.execute(status -> {
 				jdbcTemplate.execute("ALTER TABLE events DETACH PARTITION events_default");
 				if (leftoverStandaloneTableExists(partitionName)) {
-					jdbcTemplate.update("""
-							INSERT INTO events_default
-							    (id, event_id, user_id, event_type, source, occurred_at, received_at,
-							     metadata, content_hash, created_at)
-							SELECT id, event_id, user_id, event_type, source, occurred_at, received_at,
-							       metadata, content_hash, created_at
-							FROM %s""".formatted(partitionName));
-					jdbcTemplate.execute("DROP TABLE " + partitionName);
+					recoverLeftoverRows(partitionName);
 				}
 				createPartition(partitionName, month);
 				long moved = moveDefaultRows(partitionName, month);
@@ -402,6 +393,50 @@ public class PartitionMaintenanceService {
 	}
 
 	/**
+	 * Puts a legacy leftover table's rows back into the (detached) DEFAULT partition,
+	 * tolerating the duplicate state the pre-atomic implementation could leave behind
+	 * (review round 3, F1): a retry while the standalone table was invisible inserted a
+	 * second row with the same {@code (occurred_at, event_id)} into the default, and the
+	 * old code could copy both into the standalone table, which carried no unique index.
+	 * The recovery keeps ONE row per {@code (occurred_at, event_id)} — the row already in
+	 * the default wins, otherwise the first leftover row — and logs how many duplicate
+	 * rows it skipped. A legacy eventId with DIFFERENT occurredAt values (same id, different
+	 * content) is not merged: both rows are preserved (data is never destroyed) and the
+	 * count of such duplicate eventIds in the default is logged; the API's advisory lock
+	 * prevents new ones.
+	 */
+	private void recoverLeftoverRows(String partitionName) {
+		Integer leftoverRows = jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM " + partitionName, Integer.class);
+		int inserted = jdbcTemplate.update("""
+				INSERT INTO events_default
+				    (id, event_id, user_id, event_type, source, occurred_at, received_at,
+				     metadata, content_hash, created_at)
+				SELECT id, event_id, user_id, event_type, source, occurred_at, received_at,
+				       metadata, content_hash, created_at
+				FROM %s legacy
+				WHERE NOT EXISTS (SELECT 1 FROM events_default existing
+				                  WHERE existing.occurred_at = legacy.occurred_at
+				                    AND existing.event_id = legacy.event_id)
+				ON CONFLICT (occurred_at, event_id) DO NOTHING""".formatted(partitionName));
+		int skipped = (leftoverRows == null ? 0 : leftoverRows) - inserted;
+		if (skipped > 0) {
+			log.warn("Recovering leftover {}: skipped {} duplicate (occurred_at, eventId) row(s) "
+					+ "left by the pre-atomic implementation", partitionName, skipped);
+		}
+		Integer duplicateEventIds = jdbcTemplate.queryForObject("""
+				SELECT count(*) FROM (
+				    SELECT event_id FROM events_default GROUP BY event_id HAVING count(*) > 1
+				) duplicates""", Integer.class);
+		if (duplicateEventIds != null && duplicateEventIds > 0) {
+			log.warn("events_default holds {} legacy eventId value(s) with multiple rows (different "
+					+ "occurredAt): preserved as-is; the API's per-eventId lock prevents new ones",
+					duplicateEventIds);
+		}
+		jdbcTemplate.execute("DROP TABLE " + partitionName);
+	}
+
+	/**
 	 * True when a relation with the month's name exists but is NOT a child of the
 	 * {@code events} parent: a leftover standalone table from the pre-atomic
 	 * implementation (or a hand-created table). Such a table is never visible through the
@@ -410,8 +445,13 @@ public class PartitionMaintenanceService {
 	private boolean leftoverStandaloneTableExists(String partitionName) {
 		Boolean leftover = jdbcTemplate.queryForObject("""
 				SELECT to_regclass(?) IS NOT NULL
+				   AND EXISTS (SELECT 1 FROM pg_class c
+				               JOIN pg_namespace n ON n.oid = c.relnamespace
+				               WHERE c.oid = to_regclass(?) AND c.relkind = 'r'
+				                 AND n.nspname = 'public')
 				   AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = to_regclass(?))""",
-				Boolean.class, "public." + partitionName, "public." + partitionName);
+				Boolean.class, "public." + partitionName, "public." + partitionName,
+				"public." + partitionName);
 		return Boolean.TRUE.equals(leftover);
 	}
 
@@ -436,11 +476,12 @@ public class PartitionMaintenanceService {
 			if (!MONTHLY_PARTITION_NAME.matcher(name).matches()) {
 				continue; // events_default or an unrelated table: never touched here
 			}
-			YearMonth month = YearMonth.parse(name.substring("events_".length()).replace('_', '-'));
 			try {
+				YearMonth month = YearMonth.parse(name.substring("events_".length()).replace('_', '-'));
 				ensureMissingPartition(name, month, totals);
 			}
 			catch (RuntimeException e) {
+				// Includes an unparseable name such as events_2024_13: skip it, keep going.
 				log.error("Partition maintenance: recovering the leftover standalone table {} failed; "
 						+ "the later leftovers and phases are still processed", name, e);
 			}

@@ -525,7 +525,7 @@ class PartitionMaintenanceIntegrationTest {
 
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
-		// +9 failed and stays detached; +10 and +11 were still created.
+		// +9 failed and its transaction rolled back; +10 and +11 were still created.
 		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(2, 0, 0, 0));
 		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(9)));
 		assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(9)))).isTrue();
@@ -584,6 +584,50 @@ class PartitionMaintenanceIntegrationTest {
 
 		jdbcTemplate.update("DELETE FROM events WHERE event_id = 'f2-leftover'");
 		jdbcTemplate.execute("DROP TABLE " + name);
+	}
+
+	/**
+	 * Legacy duplicate recovery (review round 3, F1): the pre-atomic implementation could
+	 * leave duplicate (occurred_at, event_id) rows in a standalone table (and a copy in the
+	 * default partition). The recovery must dedupe instead of failing on the unique index:
+	 * one row per pair survives (the default's row wins), distinct rows are preserved, the
+	 * sweep skips an invalid monthly name (events_2024_13) without aborting, and the pass
+	 * reports the three distinct rows it moved.
+	 */
+	@Test
+	@Order(11)
+	void aLegacyLeftoverWithDuplicateRowsIsRecoveredWithoutFailing() {
+		testClock.set(scenarioClock(8, 15));
+		service.runMaintenance(); // restore any window months dropped by earlier scenarios
+		YearMonth outside = CURRENT.plusMonths(41);
+		String name = partitionName(outside);
+		OffsetDateTime when = startOfDayUtc(outside, 10);
+		// An invalid monthly name in the sweep: matched by the shape, unparseable as a month.
+		jdbcTemplate.execute("CREATE TABLE events_2024_13 (LIKE events INCLUDING DEFAULTS)");
+		jdbcTemplate.execute("CREATE TABLE " + name + " (LIKE events INCLUDING DEFAULTS)");
+		// Duplicate pair INSIDE the leftover, plus a distinct row.
+		insertLeftoverRow(name, 9_100_001L, "f2-dup-inside", when);
+		insertLeftoverRow(name, 9_100_002L, "f2-dup-inside", when);
+		insertLeftoverRow(name, 9_100_003L, "f2-dup-keep", when);
+		// Duplicate pair ACROSS the default and the leftover: the default's row must win.
+		assertThat(insertEvent("f2-dup-default", when)).isEqualTo(1);
+		insertLeftoverRow(name, 9_100_004L, "f2-dup-default", when);
+
+		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
+
+		// Three distinct pairs move; the two duplicate copies are skipped, no failure.
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(1, 0, 0, 3));
+		assertThat(monthlyPartitionNames()).contains(name);
+		assertThat(existsAsStandaloneTable(name)).isFalse();
+		assertThat(countEvents("f2-dup-inside")).isEqualTo(1);
+		assertThat(countEvents("f2-dup-keep")).isEqualTo(1);
+		assertThat(countEvents("f2-dup-default")).isEqualTo(1);
+		assertThat(routingPartitionOf("f2-dup-inside")).isEqualTo(name);
+		assertThat(routingPartitionOf("f2-dup-keep")).isEqualTo(name);
+
+		jdbcTemplate.update("DELETE FROM events WHERE event_id LIKE 'f2-dup-%'");
+		jdbcTemplate.execute("DROP TABLE " + name);
+		jdbcTemplate.execute("DROP TABLE events_2024_13");
 	}
 
 	// ---------------------------------------------------------------------
@@ -675,6 +719,15 @@ class PartitionMaintenanceIntegrationTest {
 				INSERT INTO events (event_id, user_id, event_type, source, occurred_at, content_hash)
 				VALUES (?, 'user-retention', 'payment.settled', 'retention-test', ?, 'retention-hash')""",
 				eventId, occurredAt);
+	}
+
+	/** Inserts one row into a legacy leftover standalone table (no unique index there). */
+	private void insertLeftoverRow(String table, long id, String eventId, OffsetDateTime when) {
+		jdbcTemplate.update("""
+				INSERT INTO %s (id, event_id, user_id, event_type, source, occurred_at, received_at,
+				                metadata, content_hash, created_at)
+				VALUES (?, ?, 'user-f2', 'payment.settled', 'core-banking', ?, now(), NULL, 'h', now())"""
+				.formatted(table), id, eventId, when);
 	}
 
 	/** Bulk-inserts rows with identical occurredAt that route into the DEFAULT partition. */

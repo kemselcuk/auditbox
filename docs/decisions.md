@@ -643,6 +643,12 @@ decision → rationale/alternatives.
     PostgreSQL renders — `+00`, whole-hour `-05`, minute offsets `+05:30`/`+05:45`, `Z`.
     Before the fix a minute-offset session zone such as Asia/Kolkata made every bound
     unparseable, every partition was skipped (kept) and retention silently stopped.)*
+    The parser assumes PostgreSQL's default ISO `DateStyle`; a session with e.g. `SQL, DMY`
+    renders bounds as `01/10/2026 ...`, which is intentionally unreadable — the partition is
+    kept (safe direction) and retention stalls with a warning. The V2 migration's comment
+    describes the plan at migration time; later retention work (including the atomic move)
+    supersedes it, and V2 is left untouched on purpose because its Flyway checksum must not
+    change for existing databases.*
     *(Review F6: a phase failure now keeps the counts already achieved — the phases
     accumulate their counters as the work happens — and a failing `DROP TABLE` is caught
     PER PARTITION, so one broken table does not abort the rest of the drop phase; the
@@ -661,7 +667,7 @@ decision → rationale/alternatives.
     DDL, no deletes, no counter increments, regardless of what the other values say.
   - Counters: untagged `auditbox.retention.partitions.created`,
     `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted`,
-    and — counting the F2 move batches — `auditbox.retention.default.rows.moved`.
+    and — counting the rows the F2 atomic move carried — `auditbox.retention.default.rows.moved`.
     No key material can reach a counter or a job log line (schema objects and counts
     only).
 - **Single-instance note (explicit caveat):** the job has no distributed lock — in a
@@ -686,7 +692,7 @@ decision → rationale/alternatives.
 - Evidence: integration tests in `io.auditbox.retention` — `PartitionMaintenanceIntegrationTest`
   (startup pass with a fixed clock: 9 exact drops + 4 exact creates; ensure with exact
   bounds; second-pass idempotency; the three drop rules incl. the exact-`<=` boundary;
-  batch cap 3 × 100 and stop-on-partial cleanup; delta-based counter assertions;
+  the 3 × 100 batch cap and stop-on-partial cleanup of the expired-rows DELETE; delta-based counter assertions;
   review F2: the stranded-rows regression — moved into the new partition, attached, no
   duplicate, later months still created via the plain path; the move batch cap —
   detached first pass, completed and attached second pass; per-month failure isolation),
@@ -763,7 +769,7 @@ decision → rationale/alternatives.
   limiter (would fake better numbers), and a GET phase (scope).
 - Evidence: `LoadGeneratorTest` (20 unit tests, no network — flag parsing/validation, the
   deterministic workload, status classification, exit codes, percentile math) in the
-  default suite (322 tests green); real runs in the README "Load test" section: 5000 POSTs
+  default suite (323 tests green); real runs in the README "Load test" section: 5000 POSTs
   @ 32 → all 201, 6.32 s wall, 791 req/s (p50 28.8 / p95 80.5 / p99 145.1 / max 799.1 ms);
   2000 POSTs @ 16 with `--replay` → 201 x2000 then 200 x2000 (replay wave 1680 req/s);
   7000 rows counted in PostgreSQL via psql; zero 429s server-side (`auditbox.rate.limited`

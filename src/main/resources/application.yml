@@ -77,11 +77,13 @@ auditbox:
   # Retention and automatic partition maintenance (M11.2/D22): at startup and daily at
   # 03:30 server time the job creates the missing monthly partitions for the lookahead
   # window (current month .. +lookahead; a month whose range already holds rows in the
-  # DEFAULT partition gets them moved into the new partition in bounded batches before
+  # DEFAULT partition gets them moved into the new partition atomically (detach/move/
+  # attach in one transaction, re-review round 2) before
   # it is attached — review F2), drops monthly partitions whose ENTIRE range is
   # older than the retention window (dropping a partition removes its rows BY DESIGN —
   # this is the retention mechanism, D22), and deletes older rows from the DEFAULT
-  # partition in bounded batches (batch size x max batches per pass). All time math is
+  # partition in bounded batches of the expired-rows DELETE (batch size x max batches per
+  # pass; the move itself is atomic, not batched). All time math is
   # UTC. Single-instance note (D22): every instance would run the job — its effects are
   # not race-free across replicas (D22 details the cases) — so stagger the cron or
   # disable the job on extra replicas.

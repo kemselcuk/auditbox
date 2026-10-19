@@ -66,9 +66,10 @@ import java.util.stream.Collectors;
  * source). A load run therefore needs the app started with a raised
  * {@code RATE_LIMIT_REQUESTS_PER_MINUTE} — the report says so when 429s appear.
  *
- * <p>Exit status: {@code 0} when every request was answered with {@code 2xx}, {@code 1}
- * when at least one connection failed or any response status was {@code >= 400}, and
- * {@code 2} for usage errors (misformatted or invalid arguments). All reported numbers are
+ * <p>Exit status: {@code 0} only when every request was answered with 200/201 (the API's
+ * success statuses), {@code 1} when at least one connection failed or any response status
+ * differed (3xx and 204 included), and {@code 2} for usage errors (misformatted or invalid
+ * arguments). All reported numbers are
  * machine/stack-specific local baselines (D23), not an SLA.
  */
 public final class LoadGenerator {
@@ -252,8 +253,8 @@ public final class LoadGenerator {
 	 * Runs the configured workload against the running stack and prints the report.
 	 *
 	 * @return the process exit code: {@code 0} when every request was answered with
-	 * {@code 2xx}, {@code 1} when at least one connection failed or any response status was
-	 * {@code >= 400} (see {@link #exitCode(Map)}).
+	 * 200/201, {@code 1} when at least one connection failed or any response status differed
+	 * (see {@link #exitCode(Map)}).
 	 */
 	private static int run(Config config, PrintStream out) {
 		// One payload per index, built once: wave 1 and (with --replay) wave 2 resend the
@@ -405,8 +406,8 @@ public final class LoadGenerator {
 		out.println("  --replay              send every eventId a second time after the first wave (expects 200s)");
 		out.println("  --run-id=ID           eventIds are load-<run-id>-<i>");
 		out.println("                        (default: <epoch-second>-<pid>, unique per process)");
-		out.println("Exit status: 0 when every request got 2xx; 1 when at least one connection failed");
-		out.println("             or any response status was >= 400; 2 on usage errors (this text)");
+		out.println("Exit status: 0 only when every request got 200/201; 1 when a connection failed");
+		out.println("             or any response status differed (3xx/204 included); 2 on usage errors");
 		out.println("Note: the app's per-source rate limiter defaults to 300 requests/min (D19). For load runs");
 		out.println("      start the app with RATE_LIMIT_REQUESTS_PER_MINUTE raised (README section 'Load test').");
 	}
