@@ -531,20 +531,25 @@ decision → rationale/alternatives.
     the V1 table constraint `uq_events_event_id` on `(event_id)` is replaced by a unique
     INDEX on `(occurred_at, event_id)` (name kept). The database therefore keeps only
     `(occurredAt, eventId)` uniqueness; same eventId in different months would pass the DB.
-  - **D4 is restored in the application:** `EventService.record` now runs in one
-    `@Transactional` scope whose FIRST database statement is
-    `SELECT pg_advisory_xact_lock(hashtextextended(:eventId, 0))`. Under the lock it
-    pre-checks the stored row (equal content hash → idempotent replay 200, different →
-    conflict 409 with the stored record, unchanged semantics and metric increments); if
-    absent, it inserts through the unchanged `REQUIRES_NEW` `EventInsertService` (the inner
-    transaction still commits independently and an inner failure does not mark the outer
-    rollback-only). The lock is transaction-scoped and released at outer commit, after the
-    inner insert committed — so a concurrent request for the same eventId blocks briefly on
-    the lock and then sees the committed row in its pre-check: one eventId can never produce
-    two rows, even across different months. Hash collisions of `hashtextextended` merely
-    serialize two unrelated eventIds for their write duration — accepted.
+  - **D4 is restored in the application:** the write path takes the transaction-scoped
+    advisory lock as the FIRST database statement of its transaction
+    (`SELECT pg_advisory_xact_lock(hashtextextended(:eventId, 0))`, `EventWriteService`).
+    Under the lock it pre-checks the stored row (equal content hash → idempotent replay
+    200, different → conflict 409 with the stored record, unchanged semantics and metric
+    increments); if absent, it inserts in the SAME transaction and connection (201). The
+    lock is released at commit, so a concurrent request for the same eventId blocks briefly
+    on the lock and then sees the committed row in its pre-check: one eventId can never
+    produce two rows, even across different months. Hash collisions of `hashtextextended`
+    merely serialize two unrelated eventIds for their write duration — accepted.
+    *(M11 review F1: the original design ran the insert in a second `REQUIRES_NEW`
+    transaction on a second connection; with N concurrent writes the pool needed N+1
+    connections and the shipped pool of 32 made 32 concurrent writes fail with Hikari
+    timeouts. The current single-transaction design needs one connection per write.)*
   - The `23505` catch stays as a safety net for writes that bypassed the lock (e.g.
     out-of-band inserts); it can now also fire on the `(occurred_at, event_id)` index.
+    Since F1 it is caught OUTSIDE the failed attempt transaction (`EventService` holds no
+    transaction), which then resolves the committed winner in a fresh read transaction —
+    one connection at a time, never two.
   - Index set on the partitioned parent: `uq_events_event_id (occurred_at, event_id)` (kept
     name), `ix_events_occurred_at_event_id (occurred_at DESC, event_id DESC)` (D3),
     `ix_events_user_id`, `ix_events_event_type`, `ix_events_source`, and — NEW — a
@@ -557,10 +562,9 @@ decision → rationale/alternatives.
   - The copy preserves `id`, `received_at` and `created_at` verbatim; the identity sequence
     is advanced past the copied maximum (`setval`). The final table keeps the name `events`
     (single-logical-table boundary unchanged; API contract and response shapes unchanged).
-- Pool headroom: a record request now holds one connection (outer transaction, advisory
-  lock) while the insert runs on a second `REQUIRES_NEW` connection; the base pool is raised
-  to 32 (`spring.datasource.hikari.maximum-pool-size`) so the 20-parallel race cannot
-  deadlock the pool.
+- Pool headroom: the write path uses one connection per request (single transaction;
+  M11 review F1). The base pool stays 32 (`spring.datasource.hikari.maximum-pool-size`) as
+  a throughput knob — it can no longer deadlock any request.
 - Rejected: unique constraint attempt without the partition key (impossible in PostgreSQL);
   session-level `pg_advisory_lock` (leaks locks on connection reuse in a pool); inserting
   via the outer transaction with catch (rollback-only pitfall, D12).
@@ -672,12 +676,12 @@ decision → rationale/alternatives.
     report hints at exactly that when 429s appear.
   - The generator is a tool, not production code: it lives in the demo package, nothing in
     the app's request path refers to it, and it changes no API, schema or write path.
-- Pool sizing note (a D21 implication the load run made visible): one record request can
-  hold TWO Hikari connections at the same time — the outer advisory-lock transaction plus
-  the `REQUIRES_NEW` insert — so a load run must raise the pool to roughly 2 x concurrency
-  (e.g. `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=64` for concurrency 32; verified live
-  via `/actuator/metrics/hikaricp.connections.max` = 64). The default pool of 32 (D21) is
-  sized for the 20-parallel test race, not for concurrency ≥ 32.
+- Pool note (superseded by the M11 review fix F1): the original write path held TWO Hikari
+  connections at once (outer advisory-lock transaction + `REQUIRES_NEW` insert), so the
+  recorded load runs raised the pool to 64 for concurrency 32. Since F1 a write uses one
+  connection at a time, so no pool override is required; the recorded numbers above were
+  taken pre-F1 and remain valid as a local baseline (the F1 regression test runs 40
+  concurrent distinct writes against the shipped pool of 32, all 201).
 - Not claimed: results are machine/stack-specific (local Docker Desktop on macOS,
   containerized PostgreSQL, one app instance on the host JVM) and are reported as a LOCAL
   BASELINE only — not an SLA, not a general benchmark of Spring Boot or PostgreSQL, and no

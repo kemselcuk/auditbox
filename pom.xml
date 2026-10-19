@@ -106,6 +106,19 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!-- The suite caches ~20 Spring contexts; closing them at JVM exit takes about
+			     35-45 s (Hikari pools, containers, schedulers), past surefire's 30-second
+			     default, which killed the forked JVM and printed a scary "kill self fork
+			     JVM" line after every green run. Wait long enough for a clean shutdown
+			     instead (M11 review note; the test profile also shuts the web server down
+			     immediately). -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<forkedProcessExitTimeoutInSeconds>90</forkedProcessExitTimeoutInSeconds>
+				</configuration>
+			</plugin>
 			<!-- SBOM (Milestone 9.6): a CycloneDX BOM over all direct and transitive
 			     dependencies is written to target/bom.json on every package (and therefore
 			     every ./mvnw verify and CI run); the CI workflow uploads it as an artifact.

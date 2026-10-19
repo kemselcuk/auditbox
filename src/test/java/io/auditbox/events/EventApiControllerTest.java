@@ -383,6 +383,46 @@ class EventApiControllerTest {
 	}
 
 	@Test
+	void moreConcurrentDistinctWritesThanThePoolSizeAllSucceed() throws Exception {
+		// M11 review F1 regression: the write path needs one pool connection per request
+		// (previously two), so 40 concurrent distinct writes against the shipped pool of
+		// 32 must all succeed — before the fix they all failed with 5xx/Hikari timeouts.
+		int concurrentWrites = 40;
+		List<String> eventIds = new ArrayList<>();
+		for (int i = 0; i < concurrentWrites; i++) {
+			eventIds.add(uniqueEventId());
+		}
+
+		ExecutorService executor = Executors.newFixedThreadPool(concurrentWrites);
+		CyclicBarrier startBarrier = new CyclicBarrier(concurrentWrites);
+		List<Callable<Integer>> tasks = new ArrayList<>();
+		for (String eventId : eventIds) {
+			String body = eventJson(eventId, "user-f1", "payment.settled", "core-banking",
+					"2026-10-18T12:00:00Z", null);
+			tasks.add(() -> {
+				startBarrier.await(10, TimeUnit.SECONDS);
+				return post(body).statusCode();
+			});
+		}
+
+		List<Integer> statuses = new ArrayList<>();
+		try {
+			for (Future<Integer> future : executor.invokeAll(tasks)) {
+				statuses.add(future.get());
+			}
+		}
+		finally {
+			executor.shutdownNow();
+		}
+
+		assertThat(statuses).hasSize(concurrentWrites);
+		assertThat(statuses).allMatch(status -> status == 201);
+		for (String eventId : eventIds) {
+			assertThat(eventRowCount(eventId)).isEqualTo(1);
+		}
+	}
+
+	@Test
 	void concurrentDifferentContentRequestsProduceOne201AndOne409AndOneRow() throws Exception {
 		String eventId = uniqueEventId();
 		String first = eventJson(eventId, "user-1", "payment.settled", "core-banking", "2026-10-18T12:00:00Z",

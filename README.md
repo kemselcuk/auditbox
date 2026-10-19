@@ -66,7 +66,7 @@ One Spring Boot application, one PostgreSQL database, one `events` table:
             │                              │   → per-eventId advisory lock    │
             │                              │     (first statement, D21)       │
             │                              │     → pre-check stored row /     │
-            │                              │       REQUIRES_NEW insert        │
+            │                              │       single-transaction insert  │
             │                              │       → 201 / 200 / 409          │
             │                              │                                  │
             │                              └─▶ GET: parse/validate query      │
@@ -100,7 +100,7 @@ Components (source layout under [src/main/java/io/auditbox](src/main/java/io/aud
 | Package | Role |
 |---|---|
 | `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter` + per-source `ApiKeyRegistry` (constant-time digest comparison), `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details, `RateLimiter`/`RateLimitFilter` (per-source 429s) |
-| `events` | `EventController` (POST/GET), `EventService`/`EventInsertService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
+| `events` | `EventController` (POST/GET), `EventService`/`EventWriteService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
 | `retention` | `PartitionMaintenanceService` + `PartitionMaintenanceScheduler`: keeps the monthly partition window healthy and applies retention (M11.2, D22) — startup pass + daily cron, lookahead partition creation, retention drops, bounded `events_default` deletes |
 | `demo` | sample-event client and load generator (JDK only, T6.1/T11.3) |
 
@@ -695,14 +695,15 @@ either):
 
 - **Rate limiter (D19):** 300 requests/min per source by default would 429 the run — start
   the app with `RATE_LIMIT_REQUESTS_PER_MINUTE` raised.
-- **Connection pool (D21):** one write can hold two Hikari connections at once (the outer
-  advisory-lock transaction plus the `REQUIRES_NEW` insert), so the pool should be about
-  2 x concurrency. The default of 32 is sized for the 20-parallel test race (D21).
+- **Connection pool (D21, M11 review F1):** a write now uses ONE Hikari connection at a
+  time (the advisory lock, pre-check and insert share a single transaction; a
+  unique-violation recovery runs after it rolled back), so no pool override is needed.
+  The pool only bounds concurrent write throughput. The recorded runs below predate this
+  fix and raised the pool to 64, which the current code no longer requires.
 
 ```bash
 DB_PORT=5433 docker compose up -d db
 RATE_LIMIT_REQUESTS_PER_MINUTE=1000000 DB_PORT=5433 \
-  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=64 \
   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
@@ -733,7 +734,8 @@ rate limiter; on connection errors at the base URL.
 Context of the runs below: Apple M2 (8 cores, 16 GB RAM), macOS 26.7.1, Docker Desktop
 (29.8.1) with the containerized `postgres:18-alpine` on host port 5433 (fresh volume), the
 app on the host JVM (Temurin 21.0.8) via `spring-boot:run` with the `local` profile,
-`RATE_LIMIT_REQUESTS_PER_MINUTE=1000000`, Hikari pool 64, nothing else running. Your
+`RATE_LIMIT_REQUESTS_PER_MINUTE=1000000`, Hikari pool 64 (pre-F1; the current code needs
+no pool override), nothing else running. Your
 numbers will differ; the runs show the write path behaves sanely under concurrent load —
 they do not state what AuditBox "achieves" in general (D23).
 
@@ -929,7 +931,9 @@ it. Short summary:
 - **D11** events schema v1: one table, named constraints and indexes, `received_at` vs
   `created_at` intent.
 - **D12** write API contract and idempotency mechanics: status codes, Problem Details shapes,
-  validation bounds, `REQUIRES_NEW` insert, SQLState 23505 handling.
+  validation bounds, `REQUIRES_NEW` insert, SQLState 23505 handling. *(The insert mechanics
+  were superseded by the M11 review fix F1 — one transaction per write, recovery outside the
+  failed transaction; see D21.)*
 - **D13** list API contract: filters, bounds, cursor codec and its size bound, one-SELECT
   query mechanics, error behavior.
 - **D14** security chain details: filtering scheme, comparison, response shapes, docs gating.

@@ -43,10 +43,10 @@ spring:
     open-in-view: false
   datasource:
     hikari:
-      # M11.1 (D21): a record request holds one connection in its outer transaction (the
-      # per-eventId advisory lock, transaction-scoped) while the insert itself runs on a
-      # second REQUIRES_NEW connection, so the pool must always have headroom above the
-      # peak number of concurrent record requests (the 20-parallel race needs 21).
+      # M11 review F1: a record request now uses ONE connection at a time (the advisory
+      # lock + pre-check + insert run in a single transaction; a unique-violation recovery
+      # runs strictly after that transaction rolled back). The pool therefore bounds
+      # concurrent write throughput only — no pool size can deadlock the write path.
       maximum-pool-size: 32
 
 management:
