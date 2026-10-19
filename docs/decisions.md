@@ -584,9 +584,14 @@ decision → rationale/alternatives.
   - One `PartitionMaintenanceService` pass runs ONCE at application startup (triggered on
     `ApplicationReadyEvent`, i.e. after Flyway has applied the schema) and then daily on
     the configured cron (`RETENTION_CRON`, default `0 30 3 * * *`, server time). A thin
-    `@Scheduled`/event-listener wrapper delegates every trigger to the service (which is
-    testable with an injected `java.time.Clock`); an in-process `AtomicBoolean` skips
-    overlapping passes in the same JVM.
+    wrapper delegates every trigger to the service (which is testable with an injected
+    `java.time.Clock`); an in-process `AtomicBoolean` skips overlapping passes in the
+    same JVM. *(M11 review round 2, F4: the cron is registered CONDITIONALLY —
+    `RetentionConfiguration` implements `SchedulingConfigurer` and adds the cron task
+    only when `enabled=true`, parsing the value there; a disabled job accepts any cron,
+    and an invalid cron aborts startup with an error naming
+    `auditbox.retention.schedule-cron`/`RETENTION_CRON` instead of the framework's
+    unnamed `@Scheduled` parse error.)*
   - **Ensure the forward window:** for every month from the current month (UTC) through
     current + look-ahead (inclusive) a missing monthly partition is created with the
     exact D21/D10 layout, `[month start UTC, next month start UTC)`, so the whole managed
@@ -620,7 +625,15 @@ decision → rationale/alternatives.
     table — by design: this delete IS the retention policy.** A partition overlapping the
     window is kept; one whose upper bound is exactly the cutoff is droppable (the `<=`
     rule); a partition whose bound cannot be parsed is skipped with a warning, never
-    dropped on a guess.
+    dropped on a guess. *(M11 review round 2, F3: the catalog renders the bound literal
+    in the database session's timezone, so the parser accepts every ISO-8601 offset form
+    PostgreSQL renders — `+00`, whole-hour `-05`, minute offsets `+05:30`/`+05:45`, `Z`.
+    Before the fix a minute-offset session zone such as Asia/Kolkata made every bound
+    unparseable, every partition was skipped (kept) and retention silently stopped.)*
+    *(Review F6: a phase failure now keeps the counts already achieved — the phases
+    accumulate their counters as the work happens — and a failing `DROP TABLE` is caught
+    PER PARTITION, so one broken table does not abort the rest of the drop phase; the
+    failed partition waits for the next pass.)*
   - **Bounded DEFAULT-partition deletes:** rows with `occurred_at <` the same cutoff in
     `events_default` are deleted in batches of `default-delete-batch-size` rows, at most
     `max-batches-per-run` batches per pass (the loop stops on a not-full batch), so one
@@ -639,13 +652,18 @@ decision → rationale/alternatives.
     No key material can reach a counter or a job log line (schema objects and counts
     only).
 - **Single-instance note (explicit caveat):** the job has no distributed lock — in a
-  multi-replica deployment every replica would run it. All its effects are idempotent
-  (existence-checked `CREATE TABLE IF NOT EXISTS`, bound-based drops, idempotent batched
-  DELETEs), so concurrent replicas cannot corrupt state, but they would duplicate work,
-  and a losing racing pass may count a CREATE it did not end up performing. The
-  deployment guidance is therefore: run the job on ONE instance (`RETENTION_ENABLED=false`
-  on the extra replicas) or stagger their crons — honestly recorded rather than hidden
-  behind a claim.
+  multi-replica deployment every replica would run it. Its effects are **not race-free
+  across replicas** (M11 review round 2, F14 — softened from the earlier "all effects
+  are idempotent" claim): `CREATE TABLE IF NOT EXISTS` narrows but does not remove the
+  create race, `ATTACH PARTITION` and `DROP TABLE` are deliberately not IF EXISTS-guarded
+  — a losing racing replica fails its partition's work, which is caught and logged (per
+  partition since F6) while the remaining work continues — and only the batched DELETEs
+  are idempotent in the strong sense (a row deleted once cannot be deleted twice).
+  Concurrent replicas therefore cannot corrupt state, but they duplicate work, one may
+  log a failed phase, and a losing racing pass may count a CREATE it did not end up
+  performing. The deployment guidance is: run the job on ONE instance
+  (`RETENTION_ENABLED=false` on the extra replicas) or stagger their crons — honestly
+  recorded rather than hidden behind a claim.
 - Rationale: partition drop is O(1) metadata work versus deleting month-sized slices row
   by row; the DEFAULT partition cannot be dropped at all (it is the catch-all for the
   rest of the documented API range, D13), so it alone gets the bounded DELETE. Deleting
@@ -661,7 +679,18 @@ decision → rationale/alternatives.
   detached first pass, completed and attached second pass; per-month failure isolation),
   `PartitionMaintenanceDisabledIntegrationTest` (disabled = no-op), `RetentionPropertiesTest`
   (config validation naming each property) — plus the live acceptance run with
-  `RETENTION_MONTHS=2` recorded in the README/report.
+  `RETENTION_MONTHS=2` recorded in the README/report. M11 review round 2 additions:
+  `PartitionMaintenanceServiceUnitTest` (Mockito `JdbcTemplate` stubs: partial
+  create/drop/delete failures keep the counts already achieved and the later phases run;
+  the name guard never drops `events_extra` or `events_default`; the overlap guard
+  returns a zero summary for a second concurrent pass — latches, no sleeps),
+  `PartitionMaintenanceBoundParseTest` (the F3 catalog offsets `+00`, `-05`, `+05:30`,
+  `+05:45`, `Z`, fractional seconds, malformed literals → null),
+  `RetentionCronRegistrationTest` (the F4 conditional cron: disabled + invalid cron
+  starts, enabled + invalid cron aborts naming the property, enabled + valid cron
+  registers exactly one cron task) and `EventsV1WithDataMigrationTest` (the F7
+  V1-only-then-V2 migration over seeded rows: verbatim survival, routing, PK/unique
+  index, identity sequence at max(id)+1).
 
 ## D23 — JDK-only load generator (M11.3)
 

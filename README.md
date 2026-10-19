@@ -134,7 +134,13 @@ runs **once at application startup** (after Flyway, so the schema exists) and th
    rows with the table, by design: this delete IS the retention policy.** A partition
    overlapping the window is kept; one whose upper bound is exactly the cutoff is
    dropped (documented `<=` rule); the decision reads the real partition bounds from
-   the PostgreSQL catalog, never just the name.
+   the PostgreSQL catalog, never just the name. The catalog renders those bounds in the
+   database session's timezone — the parser accepts every ISO-8601 offset form
+   PostgreSQL renders (`+00`, `-05`, minute offsets like `+05:30`/`+05:45`, `Z`; M11
+   review F3), so the decision does not depend on the session timezone; an unparseable
+   bound is skipped (the partition is kept) with a warning. A failing `DROP` is caught
+   per partition — one broken table does not abort the rest of the phase — and a phase
+   failure keeps the counts already achieved in the logged summary (M11 review F6).
 3. **Cleans the DEFAULT partition in bounded batches** — rows older than the same
    cutoff are deleted from `events_default` in batches of
    `RETENTION_DEFAULT_DELETE_BATCH_SIZE` rows, at most `RETENTION_MAX_BATCHES_PER_RUN`
@@ -147,12 +153,12 @@ naming the property — no clamping):
 
 | Property | Env | Default | Meaning |
 |---|---|---|---|
-| `enabled` | `RETENTION_ENABLED` | `true` | `false` makes the job a strict no-op (no DDL, no deletes, no counters) |
+| `enabled` | `RETENTION_ENABLED` | `true` | `false` makes the job a strict no-op (no DDL, no deletes, no counters) and skips every other check |
 | `months` | `RETENTION_MONTHS` | `24` | Retention window in months (≥ 1 when enabled) |
 | `lookahead-months` | `RETENTION_LOOKAHEAD_MONTHS` | `3` | Months ahead the job keeps pre-created (≥ 0 when enabled) |
 | `default-delete-batch-size` | `RETENTION_DEFAULT_DELETE_BATCH_SIZE` | `1000` | Rows per DELETE batch on `events_default` |
 | `max-batches-per-run` | `RETENTION_MAX_BATCHES_PER_RUN` | `10` | Per-pass cap on those batches |
-| `schedule-cron` | `RETENTION_CRON` | `0 30 3 * * *` | Spring cron of the daily pass |
+| `schedule-cron` | `RETENTION_CRON` | `0 30 3 * * *` | Spring cron of the daily pass; parsed only when `enabled=true` (M11 review F4) — an invalid value then aborts startup naming `auditbox.retention.schedule-cron`/`RETENTION_CRON`, while a disabled job accepts any value |
 
 The pass increments the untagged counters `auditbox.retention.partitions.created`,
 `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted` and
@@ -250,7 +256,12 @@ The same `local` profile defaults apply inside the container: the database conne
 same `DB_NAME`/`DB_USER`/`DB_PASSWORD` defaults as the `db` service (`auditbox`, override via
 `DB_HOST`/`DB_PORT`/`.env`), and the API key defaults to `local-dev-key` (via its SHA-256
 digest in `API_KEYS`, see [Authentication](#authentication)) — override with `API_KEYS` in
-`.env` for anything reachable by others:
+`.env` for anything reachable by others. The rate-limiting and retention settings are passed
+through from `.env` the same way (`RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`,
+`RETENTION_ENABLED`, `RETENTION_MONTHS`, `RETENTION_LOOKAHEAD_MONTHS`,
+`RETENTION_DEFAULT_DELETE_BATCH_SIZE`, `RETENTION_MAX_BATCHES_PER_RUN`, `RETENTION_CRON`;
+defaults match [.env.example](.env.example), see [Rate limiting](#rate-limiting-d19) and
+[Retention and partitions](#retention-and-partitions-d22)):
 
 ```bash
 curl -sS -i -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
@@ -880,10 +891,14 @@ per class:
 |---|---|
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
 | `EventsSchemaMigrationTest` | Flyway V1+V2 apply on a clean database; the `events` parent is RANGE-partitioned on `occurred_at` with monthly partitions + default (right bounds); PK `(occurred_at, id)`; unique index `(occurred_at, event_id)` (rejecting SQLState 23505), index set incl. non-unique `event_id`; columns/types/nullability/defaults; partition routing of rows (T2.1, M11.1/D21) |
+| `EventsV1WithDataMigrationTest` | M11 review F7: the automated V1-with-data migration — ONLY V1 applied to a dedicated database, seeded rows inside and outside the V2 initial window (metadata, explicit received_at/created_at), then V2: every row survives verbatim (ids and all timestamps), rows route to the right monthly/default partitions, PK `(occurred_at, id)` and the unique `(occurred_at, event_id)` index exist, the identity sequence continues at max(id)+1 |
 | `EventPartitionedIdempotencyTest` | M11.1/D21: rows route to their monthly or the default partition through the write path; GET by eventId and the list endpoint unify partitions; same eventId with DIFFERENT occurredAt → exactly one row and 409 for the loser, sequential and concurrent (the property the unique index alone can no longer give); identical retry still replays 200 |
 | `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the retention counters move exactly with each kind of work (deltas); review F2 — a month with rows in `events_default` is moved into the new partition and attached (no duplicate, later months still created, exact bounds), a move over the batch cap leaves the partition detached until the next pass completes and attaches it, and a failing month is caught per month without stopping the later months or the other phases |
 | `PartitionMaintenanceDisabledIntegrationTest` | M11.2/D22 disabled semantics: `auditbox.retention.enabled=false` makes the startup pass and a direct pass strict no-ops — the V2 window untouched, no lookahead creation, no counter increments |
 | `RetentionPropertiesTest` | M11.2/D22 config validation: months=0 / negative lookahead / zero batch size / zero max batches abort startup naming the property; disabled accepts any values (D22) |
+| `RetentionCronRegistrationTest` | M11 review F4: the daily cron is registered conditionally — disabled + invalid cron starts fine and registers no task; enabled + invalid cron aborts startup naming `auditbox.retention.schedule-cron`/`RETENTION_CRON`; enabled + valid cron registers exactly one cron task |
+| `PartitionMaintenanceBoundParseTest` | M11 review F3: the catalog bound parser accepts every ISO-8601 offset PostgreSQL renders (`+00`, `-05`, `+05:30`, `+05:45`, `Z`, fractional seconds) and returns null (logged, never thrown) for malformed literals |
+| `PartitionMaintenanceServiceUnitTest` | M11 review F6/F8 with a Mockito `JdbcTemplate` stub: a failing third create/drop/delete keeps the counts already achieved in the summary and the later phases still run (drop isolated per partition); the name guard never drops `events_extra` or `events_default` despite a valid expired bound; the overlap guard returns a zero summary for a second concurrent pass and executes no phases (latches, no sleeps) |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
 | `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI (including the `{eventId}` fetch), 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |

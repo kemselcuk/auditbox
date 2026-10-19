@@ -2,21 +2,24 @@ package io.auditbox.retention;
 
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
  * Thin scheduling wrapper for {@link PartitionMaintenanceService} (M11.2, decision D22).
- * Both triggers delegate straight to {@link PartitionMaintenanceService#runMaintenance()}
- * and carry no logic of their own, so tests drive the service directly with a fixed
- * {@link java.time.Clock}:
+ * The startup trigger lives here and delegates straight to
+ * {@link PartitionMaintenanceService#runMaintenance()} with no logic of its own, so tests
+ * drive the service directly with a fixed {@link java.time.Clock}:
  *
  * <ul>
  *   <li>{@link ApplicationReadyEvent} — the once-per-startup pass. Readiness fires after
  *       the whole context refresh, so Flyway has applied the migrations and the
  *       {@code events} schema (with its partitions) exists before the first DDL runs,</li>
- *   <li>{@code @Scheduled} cron — bound from {@code auditbox.retention.schedule-cron}
- *       ({@code RETENTION_CRON}, default daily 03:30 server time).</li>
+ *   <li>the daily cron pass is registered by {@link RetentionConfiguration} as a
+ *       {@code SchedulingConfigurer} cron task — conditionally, only when the feature is
+ *       enabled (review F4): the previous unconditional {@code @Scheduled} made Spring
+ *       parse the cron even for a disabled job, so a bad {@code RETENTION_CRON} failed
+ *       the startup of a job that would never run, with an error that did not name the
+ *       property.</li>
  * </ul>
  *
  * <p>Both passes share the service's overlap guard; a disabled configuration makes every
@@ -36,12 +39,6 @@ public class PartitionMaintenanceScheduler {
 	/** The once-per-startup pass, after Flyway (ApplicationReadyEvent). */
 	@EventListener(ApplicationReadyEvent.class)
 	public void runAtStartup() {
-		service.runMaintenance();
-	}
-
-	/** The daily pass on the configured cron. */
-	@Scheduled(cron = "${auditbox.retention.schedule-cron}")
-	public void runScheduled() {
 		service.runMaintenance();
 	}
 

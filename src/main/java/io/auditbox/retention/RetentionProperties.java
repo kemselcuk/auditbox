@@ -29,9 +29,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       and the ensure-phase move, review F2), so one pass never runs an unbounded
  *       statement. Both values must be at least 1 when enabled.</li>
  *   <li>{@code schedule-cron} — bound from {@code RETENTION_CRON}, default
- *       {@code 0 30 3 * * *} (daily 03:30 server time); parsed by the
- *       {@code @Scheduled} registration itself — an unusable cron aborts startup with
- *       its own error.</li>
+ *       {@code 0 30 3 * * *} (daily 03:30 server time); parsed only when the job is
+ *       enabled, when the cron task is registered (review F4): an unusable value aborts
+ *       startup with an {@link IllegalArgumentException} naming the property and
+ *       {@code RETENTION_CRON}. With {@code enabled=false} the value is never
+ *       parsed — a disabled job accepts any value, like every other one here.</li>
  * </ul>
  *
  * <p>Validation runs on every bind via this record's canonical constructor and only when

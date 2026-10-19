@@ -56,6 +56,18 @@ services:
       # documented local development key 'local-dev-key' (plaintext keys are never
       # stored, D18); override via .env for anything reachable by others.
       API_KEYS: ${API_KEYS:-local-dev:ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c}
+      # Rate limiting (D19) and retention/partition maintenance (D22) are passed
+      # through from .env like the settings above (review F12); the defaults match
+      # .env.example. Note the multi-instance caveat for the retention job (D22):
+      # run it on one replica or stagger RETENTION_CRON.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-300}
+      RETENTION_ENABLED: ${RETENTION_ENABLED:-true}
+      RETENTION_MONTHS: ${RETENTION_MONTHS:-24}
+      RETENTION_LOOKAHEAD_MONTHS: ${RETENTION_LOOKAHEAD_MONTHS:-3}
+      RETENTION_DEFAULT_DELETE_BATCH_SIZE: ${RETENTION_DEFAULT_DELETE_BATCH_SIZE:-1000}
+      RETENTION_MAX_BATCHES_PER_RUN: ${RETENTION_MAX_BATCHES_PER_RUN:-10}
+      RETENTION_CRON: "${RETENTION_CRON:-0 30 3 * * *}"
     ports:
       - "8080:8080"
 
