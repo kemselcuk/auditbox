@@ -16,14 +16,17 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Stateless {@code X-API-Key} authentication filter (decision D5, plan task T5.1):
+ * Stateless {@code X-API-Key} authentication filter (decisions D5 and D18, plan task
+ * T5.1, milestone 10.1):
  *
  * <ul>
- *   <li>reads the {@code X-API-Key} header once per request and compares it against the
- *       configured key with {@link ApiKeyMatcher} (constant time),</li>
+ *   <li>reads the {@code X-API-Key} header once per request and matches it against the
+ *       per-source registry via {@link ApiKeyRegistry#authenticate(String)} (constant
+ *       time against every stored digest),</li>
  *   <li>on success puts an authenticated {@link Authentication} into the
- *       {@link SecurityContext} (principal is a static client name — the key itself is never
- *       stored in the context, log, or response) and continues the chain,</li>
+ *       {@link SecurityContext} — the principal is the matched entry's SOURCE NAME (the
+ *       key itself is never stored in the context, log, or response) with the unchanged
+ *       {@code ROLE_API_CLIENT} authority — and continues the chain,</li>
  *   <li>on failure continues the chain unauthenticated; the authorization rules
  *       ({@code anyRequest().authenticated()}) then raise the 401 (rendered as Problem
  *       Details by {@link ApiKeyAuthenticationEntryPoint}). The filter deliberately does not
@@ -39,13 +42,13 @@ import jakarta.servlet.http.HttpServletResponse;
  */
 class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
-	/** Header carrying the static API key; the OpenAPI SecurityScheme documents the same name. */
+	/** Header carrying the API key; the OpenAPI SecurityScheme documents the same name. */
 	static final String HEADER = "X-API-Key";
 
-	private final ApiKeyProperties properties;
+	private final ApiKeyRegistry registry;
 
-	ApiKeyAuthenticationFilter(ApiKeyProperties properties) {
-		this.properties = properties;
+	ApiKeyAuthenticationFilter(ApiKeyRegistry registry) {
+		this.registry = registry;
 	}
 
 	@Override
@@ -53,13 +56,13 @@ class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 			throws ServletException, IOException {
 		String provided = request.getHeader(HEADER);
 		// Never log the header or its value.
-		if (ApiKeyMatcher.matches(properties.apiKey(), provided)) {
+		registry.authenticate(provided).ifPresent(source -> {
 			Authentication authentication = UsernamePasswordAuthenticationToken.authenticated(
-					"api-key-client", null, List.of(new SimpleGrantedAuthority("ROLE_API_CLIENT")));
+					source, null, List.of(new SimpleGrantedAuthority("ROLE_API_CLIENT")));
 			SecurityContext context = SecurityContextHolder.createEmptyContext();
 			context.setAuthentication(authentication);
 			SecurityContextHolder.setContext(context);
-		}
+		});
 		filterChain.doFilter(request, response);
 	}
 }

@@ -23,7 +23,8 @@ import jakarta.servlet.DispatcherType;
  * <ul>
  *   <li>no CSRF (token-free API), no sessions ({@link SessionCreationPolicy#STATELESS}),
  *       no form login, no HTTP basic — the only authentication mechanism is the
- *       {@link ApiKeyAuthenticationFilter},</li>
+ *       {@link ApiKeyAuthenticationFilter}, backed by the per-source hashed key registry
+ *       (D18),</li>
  *   <li>{@code /actuator/health/**} (health + nested liveness/readiness probes) and the static
  *       single-page demo under {@code /demo/**} (plan task T6.2) are public. The demo page is
  *       vanilla HTML and carries no secrets: it lets a human paste their {@code X-API-Key}
@@ -48,7 +49,12 @@ import jakarta.servlet.DispatcherType;
 public class ApiKeySecurityConfiguration {
 
 	@Bean
-	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyProperties properties,
+	ApiKeyRegistry apiKeyRegistry(ApiKeyProperties properties) {
+		return new ApiKeyRegistry(properties);
+	}
+
+	@Bean
+	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyRegistry registry,
 			AuditMetrics metrics) throws Exception {
 		return http
 				.csrf(csrf -> csrf.disable())
@@ -60,7 +66,7 @@ public class ApiKeySecurityConfiguration {
 						// Static single-page demo only — never the API (plan task T6.2).
 						.requestMatchers("/demo/**").permitAll()
 						.anyRequest().authenticated())
-				.addFilterBefore(new ApiKeyAuthenticationFilter(properties),
+				.addFilterBefore(new ApiKeyAuthenticationFilter(registry),
 						UsernamePasswordAuthenticationFilter.class)
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint(metrics)))

@@ -50,13 +50,16 @@ management:
         # health stays behind the static API key (ApiKeySecurityConfiguration).
         include: health,info,metrics
 
-# Static API key (D5): validated by the X-API-Key filter (ApiKeySecurityConfiguration),
-# bound from the API_KEY environment variable. Blank by default — a blank configured key
-# never matches, so a profile-less run denies every protected request (public: only
-# /actuator/health/**). The prod profile additionally fails fast at startup (ApiKeyProdRequirement).
+# Per-source API key registry (D18, hardening of D5): comma-separated source:sha256hex
+# entries bound from the API_KEYS environment variable, where sha256hex is the SHA-256
+# digest of each plaintext key (plaintext keys are never stored or logged). Blank by
+# default — an empty registry authenticates nothing, so a profile-less run denies every
+# protected request (public: only /actuator/health/**). A malformed entry aborts startup
+# in every profile; the prod profile additionally fails fast (ApiKeyProdRequirement) when
+# the value is blank or parses to zero entries.
 auditbox:
   security:
-    api-key: ${API_KEY:}
+    api-keys: ${API_KEYS:}
 
 # OpenAPI/Swagger are disabled by default and enabled per profile (dev for humans,
 # test for the OpenAPI integration tests). Documentation requires the API key like any

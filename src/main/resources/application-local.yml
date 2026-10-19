@@ -7,7 +7,11 @@ spring:
     username: ${DB_USER:auditbox}
     password: ${DB_PASSWORD:auditbox}
 
-# Safe local development API key (D5); override with API_KEY for anything exposed.
+# Safe local development key (D5/D18): the documented development plaintext key
+# 'local-dev-key' configured as its SHA-256 digest
+# (printf %s 'local-dev-key' | sha256sum) — the server never stores the plaintext key.
+# Override with API_KEYS for anything exposed; comma-separated entries, and listing a
+# second digest for the same source opens a rotation overlap window.
 auditbox:
   security:
-    api-key: ${API_KEY:local-dev-key}
+    api-keys: ${API_KEYS:local-dev:ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c}

@@ -28,13 +28,14 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
 - **Correlation**: every request gets an `X-Request-Id` (echoed from a safe incoming value or
   generated), carried in the response header and the MDC of every log line; `prod` logs ECS
   JSON to the console.
-- **Authentication** is a static `X-API-Key` header checked with a constant-time comparison;
-  `prod` refuses to start without a configured key.
+- **Authentication** is a static `X-API-Key` header matched against a registry of per-source
+  SHA-256-hashed keys (`API_KEYS`) with a constant-time comparison; the server never stores
+  plaintext keys; `prod` refuses to start without a configured registry.
 - **OpenAPI** descriptions exist for all endpoints (`/v3/api-docs`), served only in the
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
-is [docs/decisions.md](docs/decisions.md) (D1–D17).
+is [docs/decisions.md](docs/decisions.md) (D1–D18).
 
 ## What this is / is not
 
@@ -182,8 +183,9 @@ curl http://localhost:8080/actuator/health   # {"groups":["liveness","readiness"
 
 The same `local` profile defaults apply inside the container: the database connection uses the
 same `DB_NAME`/`DB_USER`/`DB_PASSWORD` defaults as the `db` service (`auditbox`, override via
-`DB_HOST`/`DB_PORT`/`.env`), and the API key defaults to `local-dev-key` — override with
-`API_KEY` in `.env` for anything reachable by others:
+`DB_HOST`/`DB_PORT`/`.env`), and the API key defaults to `local-dev-key` (via its SHA-256
+digest in `API_KEYS`, see [Authentication](#authentication)) — override with `API_KEYS` in
+`.env` for anything reachable by others:
 
 ```bash
 curl -sS -i -H "X-API-Key: local-dev-key" http://localhost:8080/api/v1/events \
@@ -362,18 +364,42 @@ X-Request-Id: run-42
 ## Authentication
 
 Every request except `/actuator/health/**` and the static demo page (`/demo/**`, see
-[Demo](#demo)) must carry the static API key in the `X-API-Key` header (decision
-[D5](docs/decisions.md)): a stateless Spring Security filter compares it against the
-configured key with a constant-time comparison (SHA-256 of both values,
-`MessageDigest.isEqual` — a code-level property, D14).
+[Demo](#demo)) must carry an API key in the `X-API-Key` header (decisions
+[D5](docs/decisions.md) and [D18](docs/decisions.md)): a stateless Spring Security filter
+matches the submitted value against a registry of per-source SHA-256-hashed keys. The
+submitted value is hashed once and compared, in constant time and without early exit, against
+every stored digest (`MessageDigest.isEqual`) so request timing does not reveal which entry
+matched; the first matching entry's `source` becomes the authenticated principal.
 
-- Configuration: `auditbox.security.api-key`, bound from the `API_KEY` environment
-  variable (see [.env.example](.env.example)).
-- `local`/`dev` profiles: safe development default `local-dev-key` always works locally;
-  override with `API_KEY` for anything reachable by others.
-- `test` profile: `test-api-key`.
-- `prod` profile: fails fast at startup when `API_KEY` is missing or blank
-  (`IllegalStateException`), so a misconfigured deployment never serves traffic.
+- **The server never stores plaintext keys.** The configuration contains only
+  `source:sha256hex` entries, where `sha256hex` is the SHA-256 hash of the key the client
+  sends. Generate a digest with:
+
+```bash
+printf %s 'the-key' | sha256sum
+# ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c  -
+```
+
+- Configuration: `auditbox.security.api-keys`, bound from the `API_KEYS` environment
+  variable (see [.env.example](.env.example)): comma-separated `source:sha256hex` entries,
+
+```text
+API_KEYS=core-banking:ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c,partner-x:4c806362b613f7496abf284146efd31da90e4b16169fe001841ca17290f427c4
+```
+
+  where `source` is 1–64 characters of `[A-Za-z0-9._-]` and the digest is exactly 64 hex
+  characters (upper case accepted). Entries and their parts are trimmed of surrounding
+  whitespace; the same source may appear more than once (see rotation below).
+- A malformed entry (missing colon, bad source, wrong-length or non-hex digest) aborts
+  startup in **every** profile with an error naming the entry index and the reason — the
+  message never contains the digest or any key material.
+- `local`/`dev` profiles: the safe development default is the digest of `local-dev-key`
+  (`local-dev:ed5a18fb…86c`), so the documented local development key keeps working
+  unchanged; override with `API_KEYS` for anything reachable by others.
+- `test` profile: the digest of `test-api-key` (source `test-client`).
+- `prod` profile: fails fast at startup when `API_KEYS` is missing, blank, or parses to
+  zero entries (`IllegalStateException`), so a misconfigured deployment never serves traffic.
+- A blank or absent `API_KEYS` yields an empty registry: nothing authenticates.
 - Missing or wrong key → `401 Unauthorized` as Problem Details (`application/problem+json`),
   plus `WWW-Authenticate: X-API-Key`; the body never echoes a submitted key and the key is
   never logged:
@@ -386,6 +412,23 @@ HTTP/1.1 401
 
 - Exactly one `X-API-Key` header is expected per request; if a proxy or client emits the
   header twice, the first value wins under the current servlet-container behavior.
+
+### Key rotation (D18)
+
+The same source may appear on several `API_KEYS` entries; each entry is an independently
+valid key. To rotate a key without a hard switchover:
+
+1. Generate the new key and digest (`printf %s … | sha256sum`); add
+   `source:<new-digest>` next to the existing entry for that source. Both keys authenticate
+   during the overlap window.
+2. Distribute the new key to the client.
+3. Remove the old `source:<old-digest>` entry and restart (configuration is read at
+   startup, not reloaded). Removing the entry ends the rotation window: the old key stops
+   authenticating immediately.
+
+There is no schedule or implied ordering — the overlap window is purely
+configuration-driven. A value containing only empty entries (blank, stray commas) opens no
+window at all: the registry is empty and `prod` refuses to start.
 
 ## Demo
 
@@ -608,7 +651,7 @@ step never fails a run; a build that stops earlier has nothing to upload): the
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D17), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D18), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -637,6 +680,9 @@ it. Short summary:
 - **D15** demo package: client, browser page, dedupe script and their reproducibility rules.
 - **D16** post-handoff M9: CI + container, single fetch, metrics counters, correlation ID +
   prod ECS logs, SBOM.
+- **D18** hardening M10.1: per-source SHA-256-hashed key registry (`API_KEYS`), rotation by
+  listing the same source twice, deny-all when empty, prod fail-fast on zero/malformed
+  entries.
 
 ## Next steps
 
@@ -646,8 +692,9 @@ it. Short summary:
 - **Playwright E2E (done):** browser-level tests for the demo page behind a separate
   `-Pe2e` Maven profile (M9.7, D17) with a manually triggered workflow; the default
   `./mvnw verify` keeps its 227-test runtime.
-- **M10 hardening (planned):** per-source hashed keys with rotation, rate limiting with
-  429/`Retry-After`, dependency automation (Renovate/Dependabot).
+- **M10 hardening:** per-source hashed keys with rotation landed (M10.1, see
+  [Authentication](#authentication) and D18); still planned — rate limiting with
+  429/`Retry-After` and dependency automation (Renovate/Dependabot).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

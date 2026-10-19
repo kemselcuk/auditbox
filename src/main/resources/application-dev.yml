@@ -7,8 +7,9 @@ springdoc:
   swagger-ui:
     enabled: true
 
-# Same safe local development API key as the local profile, so a local,dev run works
-# out of the box; /v3/api-docs and /swagger-ui/** require the key like every other path.
+# Same safe local development key as the local profile, so a local,dev run works out of
+# the box (digest of 'local-dev-key'; plaintext keys are never stored, D18).
+# /v3/api-docs and /swagger-ui/** require the key like every other path.
 auditbox:
   security:
-    api-key: ${API_KEY:local-dev-key}
+    api-keys: ${API_KEYS:local-dev:ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c}

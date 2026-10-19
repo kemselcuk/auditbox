@@ -7,18 +7,20 @@ import org.springframework.core.env.Environment;
 import org.springframework.beans.factory.InitializingBean;
 
 /**
- * Fails fast at startup in the {@code prod} profile (decision D5, plan task T5.1) when the
- * static API key is not configured: {@code auditbox.security.api-key}, bound from the
- * {@code API_KEY} environment variable, must be present and non-blank after stripping
- * surrounding whitespace (a whitespace-only key could never match, review round 4, F3).
- * The check runs on
+ * Fails fast at startup in the {@code prod} profile (decisions D5 and D18, milestone
+ * 10.1) when the API-key registry is not usable: {@code auditbox.security.api-keys},
+ * bound from the {@code API_KEYS} environment variable, must be present, non-blank, and
+ * parse to at least one {@code source:sha256hex} entry. Malformed entries already abort
+ * startup in every profile ({@link ApiKeyRegistry}). The messages name the property and
+ * the environment variable but never echo the configured value, a digest, or any other
+ * key material. The check runs on
  * context refresh, before any request can be served, and aborts the application with a
  * {@link IllegalStateException}.
  *
  * <p>Outside {@code prod} no hard requirement exists: the {@code local}/{@code dev}
- * profiles have the safe {@code local-dev-key} default, the {@code test} profile has its
- * own key, and a profile-less run simply denies every protected request (a blank configured
- * key never matches, see {@link ApiKeyMatcher}).
+ * profiles default to the digest of the documented {@code local-dev-key}, the {@code test}
+ * profile to the digest of {@code test-api-key}, and a profile-less run simply denies
+ * every protected request (empty registry).
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("prod")
@@ -32,14 +34,18 @@ public class ApiKeyProdRequirement implements InitializingBean {
 
 	@Override
 	public void afterPropertiesSet() {
-		String key = environment.getProperty("auditbox.security.api-key");
-		// A whitespace-only key would survive a plain blank check but could itself never
-		// match: the configured side is stripped before comparison (review round 4, F3),
-		// so it must fail startup exactly like missing/blank.
-		if (key == null || key.strip().isEmpty()) {
+		String raw = environment.getProperty("auditbox.security.api-keys");
+		if (raw == null || raw.isBlank()) {
 			throw new IllegalStateException(
-					"auditbox.security.api-key is missing or blank: set the API_KEY environment variable "
-							+ "(production startup requires a non-blank API key)");
+					"auditbox.security.api-keys is missing or blank: set the API_KEYS environment variable to "
+							+ "comma-separated source:sha256hex entries "
+							+ "(production startup requires at least one configured API key)");
+		}
+		if (ApiKeyRegistry.parse(raw).isEmpty()) {
+			throw new IllegalStateException(
+					"auditbox.security.api-keys contains no API key entries: set the API_KEYS environment variable to "
+							+ "comma-separated source:sha256hex entries "
+							+ "(production startup requires at least one configured API key)");
 		}
 	}
 }

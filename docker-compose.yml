@@ -52,9 +52,10 @@ services:
       DB_NAME: ${DB_NAME:-auditbox}
       DB_USER: ${DB_USER:-auditbox}
       DB_PASSWORD: ${DB_PASSWORD:-auditbox}
-      # Same safe local default as the local profile (local-dev-key);
-      # override via .env for anything reachable by others.
-      API_KEY: ${API_KEY:-local-dev-key}
+      # Same safe local default as the local profile: the SHA-256 digest of the
+      # documented local development key 'local-dev-key' (plaintext keys are never
+      # stored, D18); override via .env for anything reachable by others.
+      API_KEYS: ${API_KEYS:-local-dev:ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c}
     ports:
       - "8080:8080"
 

@@ -26,19 +26,22 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Stage 5 security tests (plan task T5.1, decision D5) over real HTTP: the static
- * {@code X-API-Key} filter chain
+ * Stage 5 security integration tests over real HTTP (plan task T5.1, decisions D5/D18):
+ * the {@code X-API-Key} filter chain backed by the per-source hashed key registry
  *
  * <ul>
  *   <li>rejects a missing key with 401 Problem Details ({@code application/problem+json},
  *       title "Unauthorized", detail naming the header, {@code WWW-Authenticate: X-API-Key}),</li>
  *   <li>rejects a wrong key with the identical 401 without echoing the submitted key,</li>
- *   <li>accepts the correct key for write (201) and read (200), including under a lowercase
+ *   <li>accepts the correct key (the plaintext behind the {@code test-client} digest, D18)
+ *       for write (201) and read (200), including under a lowercase
  *       header name,</li>
  *   <li>keeps {@code /actuator/health} public and every other actuator path protected,</li>
  *   <li>requires the key for {@code /logout} too — logout is disabled (review round 4, F2),</li>
  *   <li>keeps {@code /v3/api-docs} (enabled in the test profile) protected,</li>
- *   <li>declares the apiKey SecurityScheme (header X-API-Key) in the OpenAPI document.</li>
+ *   <li>declares the apiKey SecurityScheme (header X-API-Key) in the OpenAPI document,
+ *       rotation is covered at the registry level ({@link ApiKeyRegistryTest}) — the
+ *       integration profile needs only the one key.</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)

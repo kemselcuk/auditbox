@@ -9,11 +9,13 @@ spring:
       ddl-auto: validate
     open-in-view: false
 
-# Static API key for the integration tests (D5 / T5.1): every request that needs
-# authentication sends X-API-Key: test-api-key.
+# API key registry for the integration tests (D5/D18/T5.1): every request that needs
+# authentication sends X-API-Key: test-api-key. The configured value is the SHA-256
+# digest of that plaintext key — the plaintext key is never stored; requests authenticate
+# as the source name "test-client".
 auditbox:
   security:
-    api-key: test-api-key
+    api-keys: test-client:4c806362b613f7496abf284146efd31da90e4b16169fe001841ca17290f427c4
 
 # The OpenAPI test reads /v3/api-docs; re-enabled here because the base configuration
 # disables springdoc (D5: docs are dev-profile-only for humans).

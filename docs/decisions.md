@@ -392,3 +392,51 @@ decision → rationale/alternatives.
   as done; F6–F8 the trace wrapper no longer masks test failures, the Chromium install checks
   its exit code and runs through the test JVM's own `java`, and the manual workflow has a
   30-minute timeout.
+
+## D18 — Per-source hashed API-key registry with rotation (M10.1)
+
+- Context: D5 shipped a single static plaintext API key. An owner-approved hardening step
+  replaces it: the server now holds only SHA-256 digests, one or more per source, so a
+  configuration read (backup, `.env` copy, incident dump) no longer exposes working
+  credentials and different callers can be told apart from the configuration alone.
+- Decision: `auditbox.security.api-keys`, bound from the `API_KEYS` environment variable,
+  holds comma-separated `source:sha256hex` entries parsed once at startup by
+  `ApiKeyRegistry`. `source` is 1..64 characters of `[A-Za-z0-9._-]` and becomes the
+  authenticated principal (authority stays `ROLE_API_CLIENT`); `sha256hex` is exactly 64 hex
+  characters (upper case accepted, normalized to lower case). Entries and their parts are
+  trimmed of surrounding whitespace; empty entries (stray commas) are ignored. The plaintext
+  keys are never stored, logged, or echoed — the configuration already contains only
+  digests, generated with `printf %s 'the-key' | sha256sum`.
+- Rotation by overlap: the same source may be listed more than once — each entry is an
+  independently valid key. Procedure: add `source:<new-digest>` next to the existing entry,
+  distribute the new key to the client, then remove the old entry (config reload means a
+  restart). Removal ends the overlap window; there is no timetable, the window is purely
+  configuration-driven.
+- Comparison: constant time and position-agnostic — the provided value is SHA-256-hashed
+  once, then compared with `MessageDigest.isEqual` against every stored digest; the loop
+  never exits early so timing does not reveal the matched position. The first matching
+  entry's source wins (two entries sharing a digest authenticate as the first-listed
+  source). Null/blank provided values never match.
+- Deny-all: a blank/absent value yields an empty registry — nothing authenticates (the same
+  behavior a blank D5 key had).
+- Fail-fast: a malformed entry (missing colon, bad source, wrong-length or non-hex digest)
+  aborts startup in every profile with an `IllegalStateException` naming the entry index
+  and the reason — never echoing the digest or any other key material. In `prod`,
+  `ApiKeyProdRequirement` additionally fails when the property is blank or parses to zero
+  entries; its message names `auditbox.security.api-keys` and the `API_KEYS` environment
+  variable.
+- Profiles: `local`/`dev` default to the digest of the documented `local-dev-key`, `test` to
+  the digest of `test-api-key` — the documented local development key and every client that
+  sends a key (demo page, `SampleEventClient --api-key`, `scripts/dedupe-demo.sh API_KEY`)
+  keep their names and behavior unchanged. `ApiKeyMatcher` remains as the digest helper.
+- Rationale: hashed-only configuration limits the blast radius of a config leak, per-source
+  principals attribute server-side traffic, and overlap rotation avoids an all-clients
+  key swap — while staying a single property with no new tables, services, or endpoints.
+  Nothing else changes: entry point 401/Problem Details, the auth-failure metric
+  (`reason=missing|invalid`, never tagged with key material), `X-Request-Id`, and the public
+  surface stay as they are.
+- Evidence: `ApiKeyRegistryTest` (parsing, rotation overlap, normalization, deny-all,
+  malformed fail-fast with no digest echo, first-match resolution), `ApiKeyMatcherTest`
+  (digest helper pinned to the documented constants), `ApiKeyProdRequirementTest`
+  (blank/whitespace/zero-entries/malformed abort, valid entry starts), and the unchanged
+  `ApiKeySecurityTest` real-HTTP 401/401/201 pattern.

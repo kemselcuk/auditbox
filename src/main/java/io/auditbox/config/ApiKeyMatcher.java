@@ -5,17 +5,15 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 /**
- * Constant-time comparison of the configured API key against the provided header value
- * (decision D5): both values are reduced to SHA-256 digests and the digests are compared
- * with {@link MessageDigest#isEqual}, which runs over all bytes regardless of where a
- * mismatch occurs (except length, which leaks nothing useful for fixed-length digests).
- *
- * <p>Null and blank values never match — in particular a blank configured key (no
- * {@code API_KEY}) authenticates nothing, so a profile-less run denies everything except
- * the public actuator health endpoints. The configured key is stripped of surrounding
- * whitespace before comparison (review round 4, F3 — headers are trimmed by the container,
- * so {@code " key "} in the configuration could otherwise never match); the provided
- * header value is compared exactly as received. No value is ever logged.
+ * Constant-time digest helper for the per-source API-key registry (milestone 10.1,
+ * decision D18; successor of the D5 matcher): the configured side is stored as SHA-256
+ * digests, so the provided {@code X-API-Key} value is reduced to its SHA-256 digest once
+ * and the registry compares it against every stored digest with
+ * {@link MessageDigest#isEqual}, which runs over all bytes regardless of where a mismatch
+ * occurs (the registry's loop additionally never exits early, so even the number of
+ * comparisons is constant). Null and blank provided values never match — in particular a
+ * blank configured value (no {@code API_KEYS}) yields an empty registry that
+ * authenticates nothing. No value is ever logged.
  */
 final class ApiKeyMatcher {
 
@@ -23,19 +21,10 @@ final class ApiKeyMatcher {
 	}
 
 	/**
-	 * @param configured the configured key (may be null/blank or carry surrounding
-	 *                   whitespace — then nothing matches after stripping)
-	 * @param provided the raw {@code X-API-Key} header value (may be null/blank)
+	 * @param value any string, e.g. the raw {@code X-API-Key} header value
+	 * @return the SHA-256 digest of the UTF-8 bytes of the value
 	 */
-	static boolean matches(String configured, String provided) {
-		String trimmedConfigured = configured == null ? null : configured.strip();
-		if (trimmedConfigured == null || trimmedConfigured.isEmpty() || provided == null || provided.isBlank()) {
-			return false;
-		}
-		return MessageDigest.isEqual(sha256(trimmedConfigured), sha256(provided));
-	}
-
-	private static byte[] sha256(String value) {
+	static byte[] sha256(String value) {
 		try {
 			return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
 		}

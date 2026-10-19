@@ -2,58 +2,58 @@ package io.auditbox.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.HexFormat;
+
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the constant-time API key comparison (T5.1): null or blank values on
- * either side never match; equal values match; anything else does not.
+ * Unit tests for the digest helper used by the per-source API-key registry (milestone
+ * 10.1, decision D18; formerly the D5 matcher's comparison, which moved into
+ * {@link ApiKeyRegistry}): the helper produces deterministic SHA-256 digests over exact
+ * UTF-8 bytes, equal to the externally documented digest constants used in the profile
+ * defaults and to an independent {@code sha256sum} computation. The constant-time
+ * comparison itself is pinned by {@link ApiKeyRegistryTest}.
  */
 class ApiKeyMatcherTest {
 
 	@Test
-	void equalKeysMatch() {
-		assertThat(ApiKeyMatcher.matches("local-dev-key", "local-dev-key")).isTrue();
-		assertThat(ApiKeyMatcher.matches("test-api-key", "test-api-key")).isTrue();
+	void producesTheDocumentedSha256Digests() {
+		assertThat(HexFormat.of().formatHex(ApiKeyMatcher.sha256("local-dev-key")))
+				.isEqualTo("ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c");
+		assertThat(HexFormat.of().formatHex(ApiKeyMatcher.sha256("test-api-key")))
+				.isEqualTo("4c806362b613f7496abf284146efd31da90e4b16169fe001841ca17290f427c4");
 	}
 
 	@Test
-	void differentKeysDoNotMatch() {
-		assertThat(ApiKeyMatcher.matches("local-dev-key", "wrong-value")).isFalse();
-		assertThat(ApiKeyMatcher.matches("key-with-suffix", "key-with-suffi")).isFalse();
+	void digestIsDeterministic() {
+		byte[] first = ApiKeyMatcher.sha256("any-value");
+		byte[] second = ApiKeyMatcher.sha256("any-value");
+
+		assertThat(second).isEqualTo(first);
 	}
 
 	@Test
-	void nullOrBlankConfiguredKeyNeverMatches() {
-		assertThat(ApiKeyMatcher.matches(null, "anything")).isFalse();
-		assertThat(ApiKeyMatcher.matches("", "anything")).isFalse();
-		assertThat(ApiKeyMatcher.matches("   ", "anything")).isFalse();
-	}
-
-	@Test
-	void nullOrBlankProvidedKeyNeverMatches() {
-		assertThat(ApiKeyMatcher.matches("local-dev-key", null)).isFalse();
-		assertThat(ApiKeyMatcher.matches("local-dev-key", "")).isFalse();
-		assertThat(ApiKeyMatcher.matches("local-dev-key", "  ")).isFalse();
+	void differentInputsProduceDifferentDigests() {
+		assertThat(ApiKeyMatcher.sha256("key-one")).isNotEqualTo(ApiKeyMatcher.sha256("key-two"));
+		assertThat(ApiKeyMatcher.sha256("key-with-suffix")).isNotEqualTo(ApiKeyMatcher.sha256("key-with-suffi"));
 	}
 
 	/**
-	 * Review round 4, F3: surrounding whitespace on the configured side is stripped before
-	 * comparison (the servlet container trims header values, so an untrimmed configured key
-	 * could otherwise never match); the provided header value is compared exactly as
-	 * received.
+	 * The digest covers the exact value including surrounding whitespace: a key
+	 * configured with whitespace would produce a different digest than the same key
+	 * trimmed (the registry strips entry parts before hashing the configured side, while
+	 * the provided header value is hashed exactly as received).
 	 */
 	@Test
-	void configuredKeyWithSurroundingWhitespaceMatchesTrimmedProvidedValue() {
-		assertThat(ApiKeyMatcher.matches(" key ", "key")).isTrue();
-		assertThat(ApiKeyMatcher.matches("\tkey\n", "key")).isTrue();
-		// The provided side is deliberately not stripped: only the configuration side may
-		// carry operator-convenience whitespace.
-		assertThat(ApiKeyMatcher.matches("key", " key ")).isFalse();
+	void digestCoversTheExactUtf8BytesIncludingWhitespace() {
+		assertThat(ApiKeyMatcher.sha256(" key ")).isNotEqualTo(ApiKeyMatcher.sha256("key"));
+		byte[] digested = ApiKeyMatcher.sha256("ключ-𝕌");
+		assertThat(digested).hasSize(32);
 	}
 
 	@Test
-	void blankOnBothSidesStillNeverMatches() {
-		assertThat(ApiKeyMatcher.matches(null, null)).isFalse();
-		assertThat(ApiKeyMatcher.matches("", "")).isFalse();
+	void digestsAreAlwaysThirtyTwoBytes() {
+		assertThat(ApiKeyMatcher.sha256("")).hasSize(32);
+		assertThat(ApiKeyMatcher.sha256("a-very-long-value".repeat(100))).hasSize(32);
 	}
 }
