@@ -90,6 +90,17 @@ different model (DeepSeek V4.1 Flash). A "done" report alone is never accepted.
 | T8.1 | Read-only full-diff and docs review round (DeepSeek V4.1 Flash) | Findings resolved or explicitly deferred with rationale | done |
 | T8.2 | Final acceptance pass + cost report | Acceptance checklist with evidence; owner gives final acceptance | done |
 
+### Stage 11 — Post-handoff hardening: partitioned storage (M11)
+
+> Owner-approved post-handoff milestone; see `docs/decisions.md` D21. Orchestration and
+> scope: M11.1 schema conversion only — retention/partition maintenance is M11.2, the load
+> test is M11.3 (both out of scope here). API contract, response shapes and the
+> single-logical-table boundary are unchanged.
+
+| Task | Deliverable | Acceptance criteria | Status |
+|---|---|---|---|
+| T11.1 | Flyway V2: monthly RANGE-partitioned `events` on `occurred_at` (partitions `events_YYYY_MM` `[month start UTC, next month start UTC)`, initial window current − 25 .. + 3 months, `events_default` catch-all); migrated in place with row copy, PK `(occurred_at, id)`, unique index `(occurred_at, event_id)` (kept name `uq_events_event_id`) + new non-unique `event_id` index; write path takes a transaction-scoped advisory lock per eventId (first statement) and pre-checks before the `REQUIRES_NEW` insert (D21) | `./mvnw verify` green with the real new test count; schema/partition/idempotency tests pass; live evidence recorded (partition routing via `tableoid`, 201/200/409 semantics unchanged, 20-parallel race still one row) | done (M11.1): 262 tests green; live V1→V2-with-data migration preserved both rows into their monthly partitions; routing to `events_2026_08`/`events_default`, same-id-different-occurredAt → 409 with one row, 20-parallel identical → one row |
+
 ## Acceptance evidence matrix
 
 Filled in T7.1 (2026-10-18): each acceptance criterion of stages 0–6 plus the project-level

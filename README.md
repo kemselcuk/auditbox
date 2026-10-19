@@ -63,8 +63,10 @@ One Spring Boot application, one PostgreSQL database, one `events` table:
   page)     │    SHA-256/                  │                                  │
             │    MessageDigest)            ├─▶ POST: validation → canonical   │
             │                              │   content hash (SHA-256)         │
-            │                              │   → REQUIRES_NEW insert          │
-            │                              │     → unique-violation race      │
+            │                              │   → per-eventId advisory lock    │
+            │                              │     (first statement, D21)       │
+            │                              │     → pre-check stored row /     │
+            │                              │       REQUIRES_NEW insert        │
             │                              │       → 201 / 200 / 409          │
             │                              │                                  │
             │                              └─▶ GET: parse/validate query      │
@@ -72,20 +74,25 @@ One Spring Boot application, one PostgreSQL database, one `events` table:
             │                                    (one SELECT, size + 1 cap,   │
             │                                     opaque base64url cursor)    │
             │                                                                │
-            │   Flyway ──▶ single migration V1: events table                 │
+            │   Flyway ──▶ V1: events table; V2: monthly RANGE-              │
+            │                partitioned on occurred_at (D21)                │
             │   springdoc (dev/test profiles only) ──▶ /v3/api-docs, /swagger-ui │
             └───────────────┬────────────────────────────────────────────────┘
                             │ JDBC
                             ▼
                 PostgreSQL (container, host port 5432 or DB_PORT)
-                single table `events`:
-                  id (identity PK), event_id (unique, uq_events_event_id),
-                  user_id, event_type, source, occurred_at TIMESTAMPTZ,
-                  received_at TIMESTAMPTZ (server, default now()),
-                  metadata JSONB NULL, content_hash TEXT,
-                  created_at TIMESTAMPTZ (default now())
-                  indexes: (occurred_at DESC, event_id DESC),
-                           user_id, event_type, source
+                single logical table `events`, monthly RANGE-partitioned (D21):
+                  id (identity), event_id, user_id, event_type, source,
+                  occurred_at TIMESTAMPTZ, received_at TIMESTAMPTZ (server,
+                  default now()), metadata JSONB NULL, content_hash TEXT,
+                  created_at TIMESTAMPTZ (default now());
+                  partitions events_YYYY_MM = [month start UTC, next month
+                  start UTC) + events_default for every occurredAt of the
+                  documented API range outside the managed window;
+                  indexes: unique uq_events_event_id (occurred_at, event_id;
+                  global eventId uniqueness via the app advisory lock, D21),
+                  (occurred_at DESC, event_id DESC), event_id,
+                  user_id, event_type, source
 ```
 
 Components (source layout under [src/main/java/io/auditbox](src/main/java/io/auditbox)):
@@ -139,8 +146,9 @@ logs `<< Empty Schema >>` and `Migrating schema "public" to version "1 - create 
 ... io.auditbox.AuditBoxApplication          : Started AuditBoxApplication in 2.348 seconds (process running for 2.542)
 ```
 
-Flyway applies `V1__create_events.sql` on first start; later starts validate the migration and
-report that the schema is up to date.
+Flyway applies `V1__create_events.sql` (events table) and `V2__partition_events.sql` (M11.1:
+converts it to a monthly RANGE-partitioned table on `occurred_at`, decision D21) on first
+start; later starts validate the migrations and report that the schema is up to date.
 
 ### 3. First request
 
@@ -671,7 +679,8 @@ per class:
 | Test class | Covers |
 |---|---|
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
-| `EventsSchemaMigrationTest` | Flyway V1 applies on a clean database; columns, types, nullability, defaults, unique constraint (rejecting SQLState 23505), indexes (T2.1) |
+| `EventsSchemaMigrationTest` | Flyway V1+V2 apply on a clean database; the `events` parent is RANGE-partitioned on `occurred_at` with monthly partitions + default (right bounds); PK `(occurred_at, id)`; unique index `(occurred_at, event_id)` (rejecting SQLState 23505), index set incl. non-unique `event_id`; columns/types/nullability/defaults; partition routing of rows (T2.1, M11.1/D21) |
+| `EventPartitionedIdempotencyTest` | M11.1/D21: rows route to their monthly or the default partition through the write path; GET by eventId and the list endpoint unify partitions; same eventId with DIFFERENT occurredAt → exactly one row and 409 for the loser, sequential and concurrent (the property the unique index alone can no longer give); identical retry still replays 200 |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
 | `EventApiControllerTest` | POST: 201/200/409 semantics, validation 400s with field errors, malformed-JSON generic detail, OpenAPI (including the `{eventId}` fetch), 20 concurrent identical requests → one row, different-content race, metadata number bounds and exact jsonb precision (T3.1/T3.2, D10/D12) |
 | `EventListApiControllerTest` | GET: filters, keyset walks without gaps/duplicates (incl. tie groups), stability under inserts, cursor decode positives/negatives, default 20/max 100, one SELECT per page without a COUNT **and** the SQL LIMIT clause, OpenAPI, parameter-naming 400s, raw percent-escape 400 (T4.1/T4.2, D13) |
@@ -707,7 +716,7 @@ GitHub Actions (M10.3, D20); nothing auto-merges and every such PR runs the same
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D20), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D21), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -715,8 +724,10 @@ it. Short summary:
 - **D2** filters: exact match on user/type/source plus `occurredAt` range; no free-text search.
 - **D3** keyset pagination `(occurred_at DESC, event_id DESC)` with an opaque cursor; no total
   count; offset pagination rejected.
-- **D4** idempotency: unique `event_id` + canonical content hash; identical retry → 200 with
-  the stored record, different content → 409; races resolved from the unique violation.
+- **D4** idempotency: canonical content hash + (V1) unique `event_id` / (M11.1, D21) a
+  transaction-scoped advisory lock per eventId as the first statement of the write
+  transaction; identical retry → 200 with the stored record, different content → 409;
+  races serialize on the lock, the unique `(occurred_at, event_id)` index stays a safety net.
 - **D5** auth: static `X-API-Key`, constant-time check, health and the static demo page public,
   prod fail-fast, Swagger dev-profile only.
 - **D6–D8** documentation structure (few central docs, no per-task files), repository language
@@ -759,6 +770,9 @@ it. Short summary:
 - **M10 hardening:** per-source hashed keys with rotation landed (M10.1, D18), rate
   limiting with 429/`Retry-After` landed (M10.2, see [Rate limiting](#rate-limiting-d19)
   and D19), and dependency automation landed (M10.3, D20).
+- **M11 partitioned storage (in progress):** monthly RANGE partitioning on `occurred_at`
+  with the per-eventId advisory lock landed (M11.1, D21); retention/partition maintenance
+  and a load test follow (M11.2/M11.3).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

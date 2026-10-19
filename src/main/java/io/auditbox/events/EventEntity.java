@@ -54,9 +54,12 @@ public class EventEntity {
 	private Long id;
 
 	/**
-	 * Client-generated event identifier (D1). Backed by the unique constraint
-	 * {@code uq_events_event_id}; the insert flow catches its violation and resolves
-	 * idempotent retries and conflicts against the stored row (D4).
+	 * Client-generated event identifier (D1). Global per-eventId uniqueness is enforced by
+	 * the application with the per-eventId transaction-scoped advisory lock (M11.1, D21):
+	 * since the partitioned schema the unique index {@code uq_events_event_id} is
+	 * {@code (occurred_at, event_id)} and includes the partition key. The insert flow
+	 * catches its violation and resolves the duplicate (occurredAt, eventId) case against
+	 * the stored row (D4).
 	 */
 	@Column(name = "event_id", nullable = false)
 	private String eventId;
