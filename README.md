@@ -692,11 +692,13 @@ of the build as the `sbom` artifact whenever the build reaches the package phase
 step never fails a run; a build that stops earlier has nothing to upload): the
 [cyclonedx-maven-plugin](https://cyclonedx.github.io/cyclonedx-maven-plugin) writes
 `target/bom.json` (CycloneDX v1.6 JSON) on every `package`/`verify` (Milestone 9.6).
+[Dependabot](.github/dependabot.yml) opens weekly, grouped version-update PRs for Maven and
+GitHub Actions (M10.3, D20); nothing auto-merges and every such PR runs the same CI.
 
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D19), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D20), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -725,6 +727,8 @@ it. Short summary:
 - **D15** demo package: client, browser page, dedupe script and their reproducibility rules.
 - **D16** post-handoff M9: CI + container, single fetch, metrics counters, correlation ID +
   prod ECS logs, SBOM.
+- **D17** MIT license and the Playwright (Java) E2E suite for the demo page behind the
+  opt-in `-Pe2e` profile with a manually triggered workflow.
 - **D18** hardening M10.1: per-source SHA-256-hashed key registry (`API_KEYS`), rotation by
   listing the same source twice, deny-all when empty, prod fail-fast on zero/malformed
   entries.
@@ -732,6 +736,8 @@ it. Short summary:
   (`auditbox.rate-limit.*`), capacity + continuous refill in requests per minute,
   429 + `Retry-After` on the authenticated surface only, an untagged
   `auditbox.rate.limited` counter, and the explicit single-instance caveat.
+- **D20** hardening M10.3: Dependabot version updates for Maven and GitHub Actions
+  (weekly, minor/patch grouped, no auto-merge).
 
 ## Next steps
 
@@ -740,10 +746,10 @@ it. Short summary:
   a CycloneDX SBOM (D16) and the MIT license (D17).
 - **Playwright E2E (done):** browser-level tests for the demo page behind a separate
   `-Pe2e` Maven profile (M9.7, D17) with a manually triggered workflow; the default
-  `./mvnw verify` keeps its 227-test runtime.
-- **M10 hardening:** per-source hashed keys with rotation landed (M10.1, D18) and rate
+  `./mvnw verify` is unchanged by it.
+- **M10 hardening:** per-source hashed keys with rotation landed (M10.1, D18), rate
   limiting with 429/`Retry-After` landed (M10.2, see [Rate limiting](#rate-limiting-d19)
-  and D19); still planned — dependency automation (Renovate/Dependabot).
+  and D19), and dependency automation landed (M10.3, D20).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

@@ -492,3 +492,19 @@ decision → rationale/alternatives.
   tests), `RateLimitApiIntegrationTest` (real HTTP: 200/200/429+`Retry-After`,
   per-source isolation, key-less 401, public health 200, counter delta) — 254 tests
   green; live local run documented in the README "Rate limiting" section.
+
+## D20 — Dependency update automation with Dependabot (M10.3)
+
+- Decision: `.github/dependabot.yml` — weekly version-update pull requests for Maven and
+  GitHub Actions, minor/patch updates grouped into one PR per ecosystem, an open-PR limit of
+  5, and conventional commit-message prefixes (`chore(deps)`, `ci(deps)`). No auto-merge and
+  no change to the push pipeline: every Dependabot PR runs the same `ci.yml` build+verify,
+  image, and SBOM jobs as a human PR. GitHub's Dependabot security updates stay enabled
+  independently of this schedule.
+- Rationale: the project pins Spring Boot 4.1.x, the CycloneDX and build-helper plugins, the
+  Maven wrapper, and the GitHub Actions majors; a zero-install, free bot keeps them current
+  and surfaces advisories, without adding a runtime dependency, service, or CI cost.
+- Consequences: at most ~5 open PRs per ecosystem; major bumps arrive individually for
+  review; updates are never merged automatically.
+- Evidence: the configuration file itself (parsed by GitHub once it lands on the default
+  branch); the first scheduled PRs appear on the configured weekly cadence.

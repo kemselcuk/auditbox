@@ -1,0 +1,33 @@
+# Dependency updates (M10.3, decision D20): weekly version-update pull requests for
+# Maven and GitHub Actions. Nothing auto-merges; every Dependabot PR runs the same
+# build+verify workflow as a human PR (ci.yml). GitHub's Dependabot security updates
+# are enabled by default for the repository and are independent of this schedule.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Minor and patch bumps arrive as one reviewable PR per week; majors stay
+      # separate so they can be read individually.
+      maven-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
