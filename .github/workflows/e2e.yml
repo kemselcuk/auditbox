@@ -34,9 +34,10 @@ jobs:
 
       # Self-contained: the profile boots the app on a random port with a
       # Testcontainers PostgreSQL. The test class installs Chromium itself.
-      # PLAYWRIGHT_INSTALL_WITH_DEPS also installs the Linux system packages the
-      # browser needs, so the job does not depend on the runner image (review
-      # round 2, F3).
+      # PLAYWRIGHT_INSTALL_WITH_DEPS also runs Playwright's Linux dependency
+      # step (apt); Playwright still prints a host-validation warning listing
+      # libraries used only by the full browser, and the suite is green
+      # headless with and without the flag (review round 2, F3).
       - name: Run E2E tests
         env:
           PLAYWRIGHT_INSTALL_WITH_DEPS: "1"

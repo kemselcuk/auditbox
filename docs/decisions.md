@@ -382,10 +382,13 @@ decision → rationale/alternatives.
   all findings closed — F1 the seed stamps are computed from one truncated base instant, so
   adjacent events can no longer share a second and the exact-order assertion is
   deterministic; F2 the manual workflow caches `~/.cache/ms-playwright` (actions/cache@v6),
-  which makes the "cached after the first run" claim true on CI; F3 CI installs Chromium with
-  `--with-deps` (driven by `PLAYWRIGHT_INSTALL_WITH_DEPS`), removing the runner-image
-  dependency; F4 the pom comment now states that the Boot parent pins build-helper 3.6.1 and
-  this profile uses 3.6.2 explicitly; F5 the README "Next steps" lists Playwright as done;
-  F6–F8 the trace wrapper no longer masks test failures, the Chromium install checks its exit
-  code and runs through the test JVM's own `java`, and the manual workflow has a 30-minute
-  timeout.
+  which makes the "cached after the first run" claim true on CI (verified: the second manual
+  run restored the cache and finished in 71 s vs 102 s); F3 CI installs Chromium with
+  `--with-deps` (driven by `PLAYWRIGHT_INSTALL_WITH_DEPS`; verified that this is the only
+  configuration in which Playwright's apt dependency step runs). The host-validation warning
+  about full-browser libraries remains cosmetic: the suite runs headless and is green with
+  and without the flag; F4 the pom comment now states that the Boot parent pins build-helper
+  3.6.1 and this profile uses 3.6.2 explicitly; F5 the README "Next steps" lists Playwright
+  as done; F6–F8 the trace wrapper no longer masks test failures, the Chromium install checks
+  its exit code and runs through the test JVM's own `java`, and the manual workflow has a
+  30-minute timeout.
