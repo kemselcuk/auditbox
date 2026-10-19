@@ -34,6 +34,12 @@ decision → rationale/alternatives.
 - Rationale: First-writer-wins with explicit conflict signalling; no silent overwrites.
   Rejected: always-409 (hostile to retries), silent ignore (undebuggable).
 
+
+- Retention note (M11.2/D22): the idempotency record lives only as long as its row.
+  After retention drops the partition (or deletes an expired DEFAULT row), a retry of that
+  eventId is a NEW event (201), and different content for it can be stored — the guarantee
+  is bounded by the retention window.
+
 ## D5 — Authentication
 
 - Decision: Static API key via `X-API-Key` header, read from the environment; Spring Security filter
@@ -179,15 +185,14 @@ decision → rationale/alternatives.
 - Rendering: BigDecimal numbers are written as plain decimals (no exponent notation) on both the
   MVC and Hibernate mappers, so `1e2` renders as `100`; JSON object key order is not significant
   and jsonb may normalize it on read-back.
-- Mechanics: hash before insert; insert in a dedicated `REQUIRES_NEW` transaction
-  (`EventInsertService` via `TransactionTemplate`) so a unique violation cannot poison an outer
-  transaction; on SQLState 23505 (found in the cause chain — Spring ORM 7 translates it to a
-  generic `DataIntegrityViolationException`, not `DuplicateKeyException`) re-read the committed
-  winner and compare hashes.
-- Interim auth: a temporary basic-auth chain is active only in the `test` and `local` profiles;
-  a profile-less (`prod`-like) run keeps Boot's default until Stage 5 adds the X-API-Key chain.
-- Rationale: first-writer-wins with explicit conflict signalling, no silent overwrite; the
-  separate insert transaction is the standard fix for the PostgreSQL abort/rollback-only pitfall.
+- Mechanics: hash before insert. *Superseded by M11 review fix F1:* the original design ran the
+  insert in a dedicated `REQUIRES_NEW` transaction (`EventInsertService` via `TransactionTemplate`);
+  it now runs in ONE transaction with the advisory lock (D21), needing one connection per write,
+  and the 23505 recovery is caught OUTSIDE that failed transaction (`EventService` has none) and
+  resolved in a fresh read transaction (see D21 and `EventWriteService`). SQLState 23505 is read
+  from the cause chain — Spring ORM 7 translates it to a generic `DataIntegrityViolationException`,
+  not `DuplicateKeyException`.
+- Rationale: first-writer-wins with explicit conflict signalling, no silent overwrite.
 
 ## D13 — List API contract and keyset pagination (T4.1/T4.2)
 
@@ -610,22 +615,23 @@ decision → rationale/alternatives.
     the managed window; when such a month later enters the look-ahead window, a plain
     `CREATE TABLE ... PARTITION OF` fails on those rows (`updated partition constraint
     for default partition "events_default" would be violated by some row`) and used to
-    block every later month on every pass. Such a month now takes the standard
-    PostgreSQL recipe (verified live on PostgreSQL 18): create the standalone table
-    `events_YYYY_MM (LIKE events INCLUDING DEFAULTS)` if missing — the `id` column
-    attaches as a plain bigint (identity is not copied), NOT NULL constraints and the
-    `now()` defaults carry over, and no index is copied (the parent's partitioned
-    indexes stay the only owners of their names); move the range's rows out of
-    `events_default` in batches of `default-delete-batch-size` rows, at most
-    `max-batches-per-run` batches per pass (one `DELETE ... RETURNING *` → `INSERT ...
-    SELECT` CTE per batch); with rows left after the cap the partition stays detached
-    (warning logged) and the next pass continues; once the range is empty,
-    `ALTER TABLE events ATTACH PARTITION` brings it in with the standard bounds —
-    PostgreSQL 18 then creates the partition's child indexes for every parent index
-    automatically, and the parent's identity keeps assigning ids through the parent. A
-    month brought into place this way also counts as a created partition; each month's
-    failure is caught per month (later months still processed) and cannot abort the
-    other phases.
+    block every later month on every pass. Such a month is now repaired ATOMICALLY, in one
+    transaction (review round 2): detach `events_default` (`ALTER TABLE events DETACH
+    PARTITION`), recover a leftover standalone table from the pre-atomic implementation if
+    one exists (its rows go back into the detached default, then it is dropped), create the
+    monthly partition, move EVERY row of the month's range out of the default (one
+    `DELETE ... RETURNING *` → `INSERT ... SELECT`), and re-attach the default
+    (`ATTACH PARTITION events_default DEFAULT`). The commit is the moment the new layout
+    becomes visible: a GET, a list query or the idempotency pre-check sees either the old
+    layout or the new one, never a half-applied state, and no row is ever stranded in an
+    invisible standalone table. A failure rolls the whole transaction back (the default
+    stays attached, no partition, no lost row) and the next pass retries. The transaction
+    takes an ACCESS EXCLUSIVE lock on `events` and therefore briefly blocks API traffic —
+    the DEFAULT partition is expected to be small, so the move is short. A recovery sweep
+    also processes leftover standalone tables outside the lookahead window (the sweep is
+    window-independent). A month brought into place this way counts as a created partition,
+    moved rows are counted separately, and a month's failure is caught per month (later
+    months and the other phases still run).
   - **Retention = partition drop:** a monthly partition whose upper bound (read from the
     PostgreSQL catalog, not derived from the name) is `<=` now(UTC) − retention months is
     dropped with `DROP TABLE`. **Dropping a partition removes its rows together with the
@@ -755,9 +761,9 @@ decision → rationale/alternatives.
   explainable and testable instead of black-box. Rejected: k6/Gatling/JMeter (new
   toolchain, against the stack baseline), a generator-side bypass of auth or the rate
   limiter (would fake better numbers), and a GET phase (scope).
-- Evidence: `LoadGeneratorTest` (19 unit tests, no network — flag parsing/validation, the
+- Evidence: `LoadGeneratorTest` (20 unit tests, no network — flag parsing/validation, the
   deterministic workload, status classification, exit codes, percentile math) in the
-  default suite (294 tests green); real runs in the README "Load test" section: 5000 POSTs
+  default suite (322 tests green); real runs in the README "Load test" section: 5000 POSTs
   @ 32 → all 201, 6.32 s wall, 791 req/s (p50 28.8 / p95 80.5 / p99 145.1 / max 799.1 ms);
   2000 POSTs @ 16 with `--replay` → 201 x2000 then 200 x2000 (replay wave 1680 req/s);
   7000 rows counted in PostgreSQL via psql; zero 429s server-side (`auditbox.rate.limited`

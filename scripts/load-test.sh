@@ -18,8 +18,8 @@
 #   RUN_ID           eventIds are load-<run-id>-<n>      (default: epoch-second-pid)
 #   TIMEOUT_SECONDS  per-request timeout in seconds      (default 10)
 #
-# Exit status: the generator's — 0 when every request got 2xx, 1 when at least one
-# connection failed or any response status was >= 400, 2 on usage errors.
+# Exit status: the generator's — 0 only when every request got 200/201, 1 when a
+# connection failed or any response differed, 2 on usage errors.
 
 set -euo pipefail
 

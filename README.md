@@ -126,8 +126,8 @@ runs **once at application startup** (after Flyway, so the schema exists) and th
    PostgreSQL rejects it while those rows are there. Such a month takes the
    **move-then-attach** path instead (M11 review F2): the pass creates the standalone
    table `events_YYYY_MM (LIKE events INCLUDING DEFAULTS)`, moves the range's rows out
-   of `events_default` in batches of `RETENTION_DEFAULT_DELETE_BATCH_SIZE` rows (at
-   most `RETENTION_MAX_BATCHES_PER_RUN` batches per pass), and attaches the partition
+   of `events_default` (ALL of them, atomically — see the detach/move/attach sequence
+   below), and attaches the partition
    with the standard bounds only once the range is empty — with rows left, it stays
    detached for this pass and the next pass continues the move. One month's failure is
    caught and logged; the later months of the window are still processed.
@@ -158,8 +158,8 @@ naming the property — no clamping):
 | `enabled` | `RETENTION_ENABLED` | `true` | `false` makes the job a strict no-op (no DDL, no deletes, no counters) and skips every other check |
 | `months` | `RETENTION_MONTHS` | `24` | Retention window in months (≥ 1 when enabled) |
 | `lookahead-months` | `RETENTION_LOOKAHEAD_MONTHS` | `3` | Months ahead the job keeps pre-created (≥ 0 when enabled) |
-| `default-delete-batch-size` | `RETENTION_DEFAULT_DELETE_BATCH_SIZE` | `1000` | Rows per DELETE batch on `events_default` |
-| `max-batches-per-run` | `RETENTION_MAX_BATCHES_PER_RUN` | `10` | Per-pass cap on those batches |
+| `default-delete-batch-size` | `RETENTION_DEFAULT_DELETE_BATCH_SIZE` | `1000` | Rows per batch of the expired-rows DELETE on `events_default` (the move is atomic and not batched) |
+| `max-batches-per-run` | `RETENTION_MAX_BATCHES_PER_RUN` | `10` | Per-pass cap on the expired-rows DELETE batches |
 | `schedule-cron` | `RETENTION_CRON` | `0 30 3 * * *` | Spring cron of the daily pass; parsed only when `enabled=true` (M11 review F4) — an invalid value then aborts startup naming `auditbox.retention.schedule-cron`/`RETENTION_CRON`, while a disabled job accepts any value |
 
 The pass increments the untagged counters `auditbox.retention.partitions.created`,
@@ -177,18 +177,32 @@ cutoff are deleted in bounded batches. V2 is also an **offline migration** (it c
 old table once and drops it): stop the application before running it — a rolling upgrade
 with an older instance still writing during the copy can lose those writes.
 
-Real live check (`RETENTION_MONTHS=2`, fresh volume; abridged log lines):
+Real live check A (`RETENTION_MONTHS=2`, fresh volume; abridged log lines):
 
 ```text
 Partition maintenance starting: current month 2026-10, retention 2 month(s) (cutoff 2026-08-19...), lookahead 3 month(s)
-Partition maintenance done: 0 partition(s) created, 23 partition(s) dropped, 0 DEFAULT-partition row(s) deleted
+Partition maintenance done: 0 partition(s) created, 23 partition(s) dropped, 0 DEFAULT-partition row(s) deleted, 0 DEFAULT-partition row(s) moved
 # next startup after adding an old DEFAULT row and dropping events_2027_01 by hand:
 Created monthly partition events_2027_01 for window [...]
-Moved 1 row(s) from events_default into the new monthly partition ...   # F2 path, when applicable
-Partition maintenance done: 1 partition(s) created, 0 partition(s) dropped, 1 DEFAULT-partition row(s) deleted
+Partition maintenance done: 1 partition(s) created, 0 partition(s) dropped, 1 DEFAULT-partition row(s) deleted, 0 DEFAULT-partition row(s) moved
 # third startup:
-Partition maintenance done: 0 partition(s) created, 0 partition(s) dropped, 0 DEFAULT-partition row(s) deleted
+Partition maintenance done: 0 partition(s) created, 0 partition(s) dropped, 0 DEFAULT-partition row(s) deleted, 0 DEFAULT-partition row(s) moved
 ```
+
+Real live check B (F2 move-then-attach; a future-dated event, then
+`RETENTION_LOOKAHEAD_MONTHS=6`):
+
+```text
+Created monthly partition events_2027_02 for window [...]
+Created monthly partition events_2027_03 for window [...]
+Created monthly partition events_2027_04 and moved 1 DEFAULT-partition row(s) into it (atomic detach/move/attach)
+Partition maintenance done: 3 partition(s) created, 0 partition(s) dropped, 0 DEFAULT-partition row(s) deleted, 1 DEFAULT-partition row(s) moved
+```
+
+The move runs in one transaction: detach `events_default`, create the monthly partition,
+move every row of that month, re-attach the default. Readers see the old layout or the new
+one, never a half-applied state; the transaction takes an ACCESS EXCLUSIVE lock on `events`
+for its (short) duration, so it briefly blocks API traffic.
 
 ## Getting started
 
@@ -766,9 +780,9 @@ every eventId a second time — identical content, so the second wave must come 
 idempotent `200`s, D4), `RUN_ID` (default `<epoch-second>-<pid>`, unique per process, so
 reruns never collide) and `TIMEOUT_SECONDS` (default 10). The script preflights the public
 health endpoint, runs the incremental compile, and `exec`s the generator so its exit code
-is the script's: `0` only when at least one request completed and every response was 2xx,
-`1` when nothing completed or any response was outside 2xx (3xx included) or a connection
-failed, `2` on usage errors. It never starts or stops services.
+is the script's: `0` only when at least one request completed and every response was
+`200`/`201` (the API's success statuses), `1` when nothing completed or any response
+differed (3xx and 204 included) or a connection failed, `2` on usage errors. It never starts or stops services.
 
 The report prints, per wave: completed / wall time / throughput, the status distribution
 grouped into `200/201/409/429/5xx/other/connection errors`, and latency p50/p95/p99/max
@@ -1014,8 +1028,6 @@ it. Short summary:
   before it is attached (M11 review F2); disabled = strict no-op;
   four untagged retention counters; honest single-instance caveat (see
   [Retention and partitions](#retention-and-partitions-d22)).
-- **D23** hardening M11.3: the JDK-only load generator and the README's local baselines
-  (machine-specific, not an SLA).
 - **D23** load generator (M11.3): a JDK-only tool (`io.auditbox.demo.LoadGenerator` +
   `scripts/load-test.sh`, no k6/Gatling) with bounded virtual-thread concurrency, a
   deterministic `load-<run-id>-<i>` workload, `--replay` as a second idempotent wave, and

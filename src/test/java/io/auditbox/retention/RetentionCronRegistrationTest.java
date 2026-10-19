@@ -11,6 +11,10 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.scheduling.config.CronTask;
 import org.springframework.scheduling.config.ScheduledTask;
 import org.springframework.scheduling.config.ScheduledTaskHolder;
@@ -99,7 +103,24 @@ class RetentionCronRegistrationTest {
 		@Bean
 		PartitionMaintenanceService partitionMaintenanceService(RetentionProperties properties) {
 			return new PartitionMaintenanceService(Mockito.mock(JdbcTemplate.class), properties,
-					Mockito.mock(AuditMetrics.class), Clock.systemUTC());
+					Mockito.mock(AuditMetrics.class), Clock.systemUTC(), noOpTransactionManager());
+		}
+
+		private static PlatformTransactionManager noOpTransactionManager() {
+			return new PlatformTransactionManager() {
+				@Override
+				public TransactionStatus getTransaction(TransactionDefinition definition) {
+					return new SimpleTransactionStatus();
+				}
+
+				@Override
+				public void commit(TransactionStatus status) {
+				}
+
+				@Override
+				public void rollback(TransactionStatus status) {
+				}
+			};
 		}
 	}
 

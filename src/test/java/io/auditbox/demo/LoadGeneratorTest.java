@@ -209,11 +209,11 @@ class LoadGeneratorTest {
 	}
 
 	@Test
-	void exitCodeIsZeroOnlyWhenEveryRequestWasAnswered2xx() {
+	void exitCodeIsZeroOnlyWhenEveryRequestWasAnswered200Or201() {
 		// Nothing completed at all is a failure, not a vacuous success (review F5).
 		assertThat(LoadGenerator.exitCode(Map.of())).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(201, 3, 200, 2))).isZero();
-		assertThat(LoadGenerator.exitCode(Map.of(204, 1))).isZero();
+		assertThat(LoadGenerator.exitCode(Map.of(204, 1))).isEqualTo(1); // not an API success status
 		// Any non-2xx response fails the run, 3xx included (review F5).
 		assertThat(LoadGenerator.exitCode(Map.of(302, 1))).isEqualTo(1);
 		assertThat(LoadGenerator.exitCode(Map.of(-1, 1))).isEqualTo(1);

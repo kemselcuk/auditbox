@@ -22,12 +22,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       must be at least 0,</li>
  *   <li>{@code default-delete-batch-size} — bound from
  *       {@code RETENTION_DEFAULT_DELETE_BATCH_SIZE}, default 1000; row count of one
- *       DELETE batch against the DEFAULT partition — and of one move batch out of it
- *       into a new monthly partition (review F2),</li>
+ *       batch of the expired-rows DELETE against the DEFAULT partition (the F2 move is
+ *       atomic and not batched),</li>
  *   <li>{@code max-batches-per-run} — bound from {@code RETENTION_MAX_BATCHES_PER_RUN},
- *       default 10; the per-pass cap on those batches (for both the expired-rows DELETE
- *       and the ensure-phase move, review F2), so one pass never runs an unbounded
- *       statement. Both values must be at least 1 when enabled.</li>
+ *       default 10; the per-pass cap on the expired-rows DELETE batches, so one pass
+ *       never runs an unbounded DELETE. Both values must be at least 1 when enabled.</li>
  *   <li>{@code schedule-cron} — bound from {@code RETENTION_CRON}, default
  *       {@code 0 30 3 * * *} (daily 03:30 server time); parsed only when the job is
  *       enabled, when the cron task is registered (review F4): an unusable value aborts

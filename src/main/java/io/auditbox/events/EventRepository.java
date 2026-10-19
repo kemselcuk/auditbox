@@ -32,8 +32,10 @@ public interface EventRepository extends JpaRepository<EventEntity, Long>, JpaSp
 	 * unrelated eventIds for their write duration — acceptable (documented in D21).
 	 *
 	 * <p>Must be the FIRST database statement of the caller's transaction:
-	 * {@link EventService#record} guarantees this by calling it right after its
-	 * {@code @Transactional} boundary opens.
+	 * {@link EventWriteService#attempt} guarantees this by calling it right after its
+	 * {@code @Transactional} boundary opens (review fix F1 moved the transaction boundary
+	 * there; {@link EventService#record} deliberately holds no transaction so the 23505
+	 * recovery can run outside the failed one).
 	 */
 	@Query(value = "SELECT pg_advisory_xact_lock(hashtextextended(:eventId, 0))", nativeQuery = true)
 	void lockEventId(@Param("eventId") String eventId);

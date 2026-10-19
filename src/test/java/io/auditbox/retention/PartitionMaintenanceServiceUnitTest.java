@@ -18,6 +18,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,6 +31,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import io.auditbox.metrics.AuditMetrics;
 
@@ -64,10 +70,29 @@ class PartitionMaintenanceServiceUnitTest {
 
 	private AuditMetrics metrics;
 
+	/** No-op transaction manager: the atomic move runs its callback inline in unit tests. */
+	private static final PlatformTransactionManager NO_OP_TX = new PlatformTransactionManager() {
+		@Override
+		public TransactionStatus getTransaction(TransactionDefinition definition) {
+			return new SimpleTransactionStatus();
+		}
+
+		@Override
+		public void commit(TransactionStatus status) {
+		}
+
+		@Override
+		public void rollback(TransactionStatus status) {
+		}
+	};
+
 	@BeforeEach
 	void setUp() {
 		jdbcTemplate = mock(JdbcTemplate.class);
 		metrics = mock(AuditMetrics.class);
+		// The leftover-recovery sweep reads standalone tables through a RowMapper; no
+		// leftovers in these scenarios unless a test says otherwise.
+		when(jdbcTemplate.query(anyString(), any(RowMapper.class))).thenReturn(List.of());
 	}
 
 	// ---------------------------------------------------------------------
@@ -81,7 +106,7 @@ class PartitionMaintenanceServiceUnitTest {
 	@Test
 	void aFailingThirdCreateKeepsTheFirstTwoCountsAndTheLaterPhasesStillRun() {
 		PartitionMaintenanceService service = new PartitionMaintenanceService(jdbcTemplate,
-				properties(240, 2, 1000, 10), metrics, CLOCK);
+				properties(240, 2, 1000, 10), metrics, CLOCK, NO_OP_TX);
 		// No existing partitions (the unstubbed catalog query never calls the handler)
 		// and no DEFAULT-partition rows in any range (the unstubbed probe answers null):
 		// every lookahead month takes the plain create path.
@@ -113,7 +138,7 @@ class PartitionMaintenanceServiceUnitTest {
 	@Test
 	void aFailingThirdDropIsIsolatedPerPartitionAndTheSummaryCountsTheRest() {
 		PartitionMaintenanceService service = new PartitionMaintenanceService(jdbcTemplate,
-				properties(1, 0, 1000, 10), metrics, CLOCK);
+				properties(1, 0, 1000, 10), metrics, CLOCK, NO_OP_TX);
 		// Four fully expired monthly partitions (upper bounds far before the 2026-05-15
 		// cutoff) plus the current month's keeper.
 		stubCatalogPartitions(jdbcTemplate, new String[][] {
@@ -147,7 +172,7 @@ class PartitionMaintenanceServiceUnitTest {
 	@Test
 	void aFailingThirdDeleteBatchKeepsTheCountsAlreadyAchieved() {
 		PartitionMaintenanceService service = new PartitionMaintenanceService(jdbcTemplate,
-				properties(1, 0, 100, 10), metrics, CLOCK);
+				properties(1, 0, 100, 10), metrics, CLOCK, NO_OP_TX);
 		// The current month exists and overlaps the window: ensure and drop are quiet.
 		stubCatalogPartitions(jdbcTemplate, new String[][] {
 				{ "events_2026_06", "FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00')" } });
@@ -178,7 +203,7 @@ class PartitionMaintenanceServiceUnitTest {
 	@Test
 	void anUnexpectedChildTableIsNeverDroppedDespiteAValidExpiredBound() {
 		PartitionMaintenanceService service = new PartitionMaintenanceService(jdbcTemplate,
-				properties(1, 0, 1000, 10), metrics, CLOCK);
+				properties(1, 0, 1000, 10), metrics, CLOCK, NO_OP_TX);
 		stubCatalogPartitions(jdbcTemplate, new String[][] {
 				{ "events_2024_01", "FOR VALUES FROM ('2024-01-01 00:00:00+00') TO ('2024-02-01 00:00:00+00')" },
 				{ "events_2026_06", "FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00')" },
@@ -187,7 +212,7 @@ class PartitionMaintenanceServiceUnitTest {
 
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0, 0));
 		// Exactly one DROP — the one monthly-named expired partition.
 		verify(jdbcTemplate, times(1)).execute(anyString());
 		verify(jdbcTemplate).execute("DROP TABLE events_2024_01");
@@ -208,7 +233,7 @@ class PartitionMaintenanceServiceUnitTest {
 	@Test
 	void anOverlappingSecondRunReturnsAZeroSummaryAndExecutesNoPhases() throws Exception {
 		PartitionMaintenanceService service = new PartitionMaintenanceService(jdbcTemplate,
-				properties(240, 0, 1000, 10), metrics, CLOCK);
+				properties(240, 0, 1000, 10), metrics, CLOCK, NO_OP_TX);
 
 		CountDownLatch firstPassInsidePhase = new CountDownLatch(1);
 		CountDownLatch releaseFirstPass = new CountDownLatch(1);
@@ -247,7 +272,7 @@ class PartitionMaintenanceServiceUnitTest {
 
 			// The second, overlapping trigger: skipped, zero summary, nothing executed.
 			PartitionMaintenanceService.MaintenanceSummary second = service.runMaintenance();
-			assertThat(second).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0));
+			assertThat(second).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0, 0));
 			assertThat(phaseInteraction).as("no phase may execute for the overlapping trigger").isFalse();
 
 			releaseFirstPass.countDown();

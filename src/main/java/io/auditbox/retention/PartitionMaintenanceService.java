@@ -8,7 +8,9 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -21,6 +23,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import io.auditbox.metrics.AuditMetrics;
 
@@ -115,8 +119,9 @@ public class PartitionMaintenanceService {
 	 * The trailing ISO-8601 offset of a catalog bound literal, as PostgreSQL renders it
 	 * for the DATABASE session's timezone: {@code +00} (UTC), whole-hour offsets like
 	 * {@code -05}, minute offsets like {@code +05:30}/{@code +05:45} (review F3), with
-	 * or without the colon, optionally seconds. Group 1 is the hour part, group 2 the
-	 * (possibly absent) minute part.
+	 * or without the colon. Group 1 is the hour part, group 2 the (possibly absent)
+	 * minute part. Second-precision offsets are not rendered by any common zone and are
+	 * rejected (the partition is then kept, the safe direction).
 	 */
 	private static final Pattern BOUND_OFFSET_SUFFIX = Pattern.compile("([+-]\\d{2})(?::?(\\d{2}))?$");
 
@@ -129,19 +134,28 @@ public class PartitionMaintenanceService {
 	/** The single time source for every decision; tests inject a fixed clock. */
 	private final Clock clock;
 
+	/**
+	 * Transaction boundary for the atomic DEFAULT-partition move (review round 2, F2):
+	 * detach the default partition, create the monthly partition, move its rows and
+	 * re-attach the default all commit together or not at all.
+	 */
+	private final TransactionTemplate moveTransaction;
+
 	/** Overlap guard, shared by the startup pass and the cron pass. */
 	private final AtomicBoolean running = new AtomicBoolean();
 
 	PartitionMaintenanceService(JdbcTemplate jdbcTemplate, RetentionProperties properties,
-			AuditMetrics metrics, Clock clock) {
+			AuditMetrics metrics, Clock clock, PlatformTransactionManager transactionManager) {
 		this.jdbcTemplate = jdbcTemplate;
 		this.properties = properties;
 		this.metrics = metrics;
 		this.clock = clock;
+		this.moveTransaction = new TransactionTemplate(transactionManager);
 	}
 
 	/** What one maintenance pass actually did; also the shape of the logged summary. */
-	public record MaintenanceSummary(int partitionsCreated, int partitionsDropped, long defaultRowsDeleted) {
+	public record MaintenanceSummary(int partitionsCreated, int partitionsDropped, long defaultRowsDeleted,
+			long defaultRowsMoved) {
 	}
 
 	/**
@@ -155,11 +169,11 @@ public class PartitionMaintenanceService {
 			// Disabled (D22): a strict no-op — the counters stay untouched too, so the
 			// metrics only ever report work the enabled job did.
 			log.debug("Partition maintenance is disabled (auditbox.retention.enabled=false); skipping");
-			return new MaintenanceSummary(0, 0, 0);
+			return new MaintenanceSummary(0, 0, 0, 0);
 		}
 		if (!running.compareAndSet(false, true)) {
 			log.warn("Partition maintenance is already running in this process; skipping the overlapping trigger");
-			return new MaintenanceSummary(0, 0, 0);
+			return new MaintenanceSummary(0, 0, 0, 0);
 		}
 		try {
 			return runPhases();
@@ -194,6 +208,12 @@ public class PartitionMaintenanceService {
 			log.error("Partition maintenance: creating the lookahead window failed", e);
 		}
 		try {
+			recoverLeftoverStandaloneTables(totals);
+		}
+		catch (RuntimeException e) {
+			log.error("Partition maintenance: recovering leftover standalone partition tables failed", e);
+		}
+		try {
 			dropExpiredPartitions(cutoff, totals);
 		}
 		catch (RuntimeException e) {
@@ -208,9 +228,11 @@ public class PartitionMaintenanceService {
 
 		// Concise summary, no key material involved anywhere (schema objects and counts only).
 		log.info("Partition maintenance done: {} partition(s) created, {} partition(s) dropped, "
-				+ "{} DEFAULT-partition row(s) deleted", totals.partitionsCreated, totals.partitionsDropped,
-				totals.defaultRowsDeleted);
-		return new MaintenanceSummary(totals.partitionsCreated, totals.partitionsDropped, totals.defaultRowsDeleted);
+				+ "{} DEFAULT-partition row(s) deleted, {} DEFAULT-partition row(s) moved",
+				totals.partitionsCreated, totals.partitionsDropped, totals.defaultRowsDeleted,
+				totals.defaultRowsMoved);
+		return new MaintenanceSummary(totals.partitionsCreated, totals.partitionsDropped,
+				totals.defaultRowsDeleted, totals.defaultRowsMoved);
 	}
 
 	/** Mutable accumulator for the phase counters (review F6); not thread-safe on
@@ -220,6 +242,7 @@ public class PartitionMaintenanceService {
 		private int partitionsCreated;
 		private int partitionsDropped;
 		private long defaultRowsDeleted;
+		private long defaultRowsMoved;
 	}
 
 	/**
@@ -238,7 +261,7 @@ public class PartitionMaintenanceService {
 				continue;
 			}
 			try {
-				totals.partitionsCreated += ensureMissingPartition(partitionName, month);
+				ensureMissingPartition(partitionName, month, totals);
 			}
 			catch (RuntimeException e) {
 				// Per-month failure isolation (review F2): one broken month — a DDL
@@ -254,19 +277,21 @@ public class PartitionMaintenanceService {
 	/**
 	 * Ensures one missing month of the window. Without DEFAULT-partition rows in the
 	 * month's range and without a leftover standalone table this is the plain DDL path;
-	 * otherwise the move-then-attach path runs. Returns 1 when the month ends the pass
-	 * attached (either path), 0 when it had to stay detached (move not finished).
+	 * otherwise the atomic move-then-attach path runs (review round 2, F2). Returns 1
+	 * when the month ends the pass attached (either path), 0 when the atomic pass failed
+	 * and rolled back (retried next pass).
 	 */
-	private int ensureMissingPartition(String partitionName, YearMonth month) {
+	private void ensureMissingPartition(String partitionName, YearMonth month, PhaseTotals totals) {
 		boolean defaultRowsInRange = defaultPartitionHasRowsInRange(month);
-		if (!defaultRowsInRange && !standaloneTableExists(partitionName)) {
+		if (!defaultRowsInRange && !leftoverStandaloneTableExists(partitionName)) {
 			createPartition(partitionName, month);
 			metrics.retentionPartitionCreated();
+			totals.partitionsCreated++;
 			log.info("Created monthly partition {} for window [{}, {})", partitionName,
 					startOfMonth(month), startOfMonth(month.plusMonths(1)));
-			return 1;
+			return;
 		}
-		return moveDefaultRowsAndAttach(partitionName, month, defaultRowsInRange);
+		moveDefaultRowsAndAttachAtomic(partitionName, month, totals);
 	}
 
 	/**
@@ -283,113 +308,73 @@ public class PartitionMaintenanceService {
 	}
 
 	/**
-	 * The move-then-attach path for a month whose range holds (or held, from an earlier
-	 * partial pass) rows in the DEFAULT partition — the plain {@code CREATE TABLE ...
-	 * PARTITION OF} fails on such rows with {@code updated partition constraint for
-	 * default partition "events_default" would be violated by some row} (review F2),
-	 * which used to block the whole window every pass. The standard PostgreSQL recipe,
-	 * verified live against PostgreSQL 18:
+	 * Atomic move-then-attach for a month whose range holds DEFAULT-partition rows (or a
+	 * leftover standalone table from the pre-atomic implementation). The whole sequence
+	 * runs in ONE transaction (review round 2, F2):
 	 *
 	 * <ol>
-	 *   <li>Create the standalone table {@code (LIKE events INCLUDING DEFAULTS)} if it is
-	 *       missing (see {@link #createStandaloneTable(String)}),</li>
-	 *   <li>move the range's rows from {@code events_default} into it in batches of
-	 *       {@code default-delete-batch-size} rows, at most {@code max-batches-per-run}
-	 *       batches this pass (see {@link #moveDefaultRowsBounded(String, YearMonth)}),</li>
-	 *   <li>when rows remain in the range after the cap, log a warning and leave the
-	 *       partition DETACHED this pass — attaching with rows left in the DEFAULT
-	 *       partition would fail with exactly the error above; the next pass continues
-	 *       the move,</li>
-	 *   <li>when the range is empty, {@code ALTER TABLE events ATTACH PARTITION} brings
-	 *       the table in with the standard bounds. PostgreSQL 18 then creates the child
-	 *       indexes for every parent index automatically (verified live: events_pkey,
-	 *       uq_events_event_id, ix_events_occurred_at_event_id, ix_events_event_id,
-	 *       ix_events_user_id, ix_events_event_type, ix_events_source) — no index is
-	 *       created here, and the parent's identity keeps assigning ids through the
-	 *       parent.</li>
+	 *   <li>detach the DEFAULT partition ({@code ALTER TABLE events DETACH PARTITION
+	 *       events_default}) — PostgreSQL refuses to create a partition while the attached
+	 *       default holds rows in its range, and the atomic transaction means readers see
+	 *       either the old layout or the new one, never a half-applied state,</li>
+	 *   <li>recover a leftover standalone table from the previous implementation: its rows
+	 *       go back into the detached default (that is where they came from), then the
+	 *       leftover table is dropped,</li>
+	 *   <li>create the monthly partition (no default attached, so the range is free),</li>
+	 *   <li>move EVERY row of the month's range from the detached default into the new
+	 *       partition (one statement; the move must complete for the re-attach to
+	 *       validate),</li>
+	 *   <li>re-attach the DEFAULT partition ({@code ATTACH PARTITION events_default
+	 *       DEFAULT}); PostgreSQL validates that no remaining default row falls into an
+	 *       existing partition,</li>
+	 *   <li>commit — rows become visible through the {@code events} parent at the same
+	 *       moment the old layout stops existing; there is no window in which a GET, a
+	 *       list query or the idempotency pre-check misses a moved row.</li>
 	 * </ol>
 	 *
-	 * <p>A month brought into place this way also counts as a created partition (the
-	 * {@code auditbox.retention.partitions.created} counter and the summary's
-	 * {@code partitionsCreated}): the pass made a missing monthly partition exist. The
-	 * moved rows are counted separately via
-	 * {@code auditbox.retention.default.rows.moved}. Like {@link #createPartition(String,
-	 * YearMonth)}, the attach is not IF EXISTS-guarded: the pass just proved the month
-	 * missing, and a concurrent losing replica fails its phase (caught) instead of
-	 * miscounting (D22 multi-instance note).
+	 * <p>The transaction takes an ACCESS EXCLUSIVE lock on {@code events} for its duration
+	 * (the detach/attach requirement) and therefore briefly blocks API traffic while it
+	 * runs; the DEFAULT partition is expected to be small (only dates outside the managed
+	 * window), so the move is short. A failure rolls everything back: the default stays
+	 * attached, no partition is created and no row is lost — the next pass retries. Moved
+	 * rows are counted in {@code auditbox.retention.default.rows.moved} and in the pass
+	 * summary after commit.
 	 */
-	private int moveDefaultRowsAndAttach(String partitionName, YearMonth month, boolean defaultRowsInRange) {
-		createStandaloneTable(partitionName);
-		long moved = defaultRowsInRange ? moveDefaultRowsBounded(partitionName, month) : 0;
-		if (defaultPartitionHasRowsInRange(month)) {
-			log.warn("Partition maintenance: rows remain in events_default for the [{}, {}) window after "
-					+ "the batch cap; the partition {} stays detached and the next pass continues the move",
-					startOfMonth(month), startOfMonth(month.plusMonths(1)), partitionName);
-			return 0;
+	private void moveDefaultRowsAndAttachAtomic(String partitionName, YearMonth month, PhaseTotals totals) {
+		Long movedRows;
+		try {
+			movedRows = moveTransaction.execute(status -> {
+				jdbcTemplate.execute("ALTER TABLE events DETACH PARTITION events_default");
+				if (leftoverStandaloneTableExists(partitionName)) {
+					jdbcTemplate.update("""
+							INSERT INTO events_default
+							    (id, event_id, user_id, event_type, source, occurred_at, received_at,
+							     metadata, content_hash, created_at)
+							SELECT id, event_id, user_id, event_type, source, occurred_at, received_at,
+							       metadata, content_hash, created_at
+							FROM %s""".formatted(partitionName));
+					jdbcTemplate.execute("DROP TABLE " + partitionName);
+				}
+				createPartition(partitionName, month);
+				long moved = moveDefaultRows(partitionName, month);
+				jdbcTemplate.execute("ALTER TABLE events ATTACH PARTITION events_default DEFAULT");
+				return moved;
+			});
 		}
-		attachPartition(partitionName, month);
+		catch (RuntimeException e) {
+			log.error("Partition maintenance: the atomic move into {} failed; the transaction rolled back "
+					+ "(the DEFAULT partition is still attached) and the next pass will retry", partitionName, e);
+			return;
+		}
+		long moved = movedRows == null ? 0 : movedRows;
+		totals.partitionsCreated++;
+		totals.defaultRowsMoved += moved;
 		metrics.retentionPartitionCreated();
-		log.info("Moved {} row(s) from events_default into the new monthly partition {} for window [{}, {}) "
-				+ "and attached it", moved, partitionName, startOfMonth(month), startOfMonth(month.plusMonths(1)));
-		return 1;
-	}
-
-	/**
-	 * The standalone (not-yet-attached) monthly table. {@code INCLUDING DEFAULTS} on
-	 * purpose and ONLY that: NOT NULL constraints are always copied by {@code LIKE} (the
-	 * attach requires them) and the {@code now()} defaults keep plain inserts possible,
-	 * while the identity is NOT copied — the {@code id} column joins as a plain bigint,
-	 * which PostgreSQL 18 attaches cleanly (verified live), and no index is copied, so
-	 * the parent's partitioned indexes stay the only owners of their names.
-	 */
-	private void createStandaloneTable(String partitionName) {
-		jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS " + partitionName + " (LIKE events INCLUDING DEFAULTS)");
-	}
-
-	/**
-	 * The bounded move: one CTE per batch ({@code DELETE ... RETURNING *} feeding
-	 * {@code INSERT ... SELECT} into the standalone table), capped by the same batch
-	 * shape as the expired-rows DELETE of phase 3 — batches of
-	 * {@code default-delete-batch-size} rows, at most {@code max-batches-per-run} per
-	 * pass, stopping early on a not-full batch (nothing left in range). The id-subselect
-	 * LIMIT bounds the DELETE the same way phase 3 bounds its own. Rows keep every column
-	 * verbatim, including ids and the received/created timestamps. The partition name is
-	 * clock-derived ({@code events_} + {@code YYYY_MM}); the bounds are bound parameters.
-	 */
-	private long moveDefaultRowsBounded(String partitionName, YearMonth month) {
-		OffsetDateTime lower = startOfMonthUtc(month);
-		OffsetDateTime upper = startOfMonthUtc(month.plusMonths(1));
-		int batchSize = properties.defaultDeleteBatchSize();
-		long total = 0;
-		for (int batch = 0; batch < properties.maxBatchesPerRun(); batch++) {
-			int moved = jdbcTemplate.update("""
-					WITH moved AS (
-					    DELETE FROM events_default WHERE id IN
-					        (SELECT id FROM events_default WHERE occurred_at >= ? AND occurred_at < ? LIMIT ?)
-					    RETURNING *)
-					INSERT INTO %s
-					    (id, event_id, user_id, event_type, source, occurred_at, received_at, metadata,
-					     content_hash, created_at)
-					SELECT id, event_id, user_id, event_type, source, occurred_at, received_at, metadata,
-					       content_hash, created_at
-					FROM moved""".formatted(partitionName), lower, upper, batchSize);
-			if (moved > 0) {
-				metrics.retentionDefaultRowsMoved(moved);
-			}
-			total += moved;
-			if (moved < batchSize) {
-				break;
-			}
+		if (moved > 0) {
+			metrics.retentionDefaultRowsMoved(moved);
 		}
-		return total;
-	}
-
-	/** The standard-bounds attach of a fully moved standalone monthly table. */
-	private void attachPartition(String partitionName, YearMonth month) {
-		String lower = BOUND_LITERAL_FORMAT.format(startOfMonth(month)) + "+00";
-		String upper = BOUND_LITERAL_FORMAT.format(startOfMonth(month.plusMonths(1))) + "+00";
-		jdbcTemplate.execute("ALTER TABLE events ATTACH PARTITION " + partitionName
-				+ " FOR VALUES FROM ('" + lower + "') TO ('" + upper + "')");
+		log.info("Created monthly partition {} and moved {} DEFAULT-partition row(s) into it "
+				+ "(atomic detach/move/attach)", partitionName, moved);
 	}
 
 	/** Does events_default hold at least one row inside the month's half-open UTC range? */
@@ -401,17 +386,65 @@ public class PartitionMaintenanceService {
 		return Boolean.TRUE.equals(exists);
 	}
 
+	/** Moves every row of the month's range out of the (detached) DEFAULT partition. */
+	private long moveDefaultRows(String partitionName, YearMonth month) {
+		return jdbcTemplate.update("""
+				WITH moved AS (
+				    DELETE FROM events_default WHERE occurred_at >= ? AND occurred_at < ?
+				    RETURNING *)
+				INSERT INTO %s
+				    (id, event_id, user_id, event_type, source, occurred_at, received_at, metadata,
+				     content_hash, created_at)
+				SELECT id, event_id, user_id, event_type, source, occurred_at, received_at, metadata,
+				       content_hash, created_at
+				FROM moved""".formatted(partitionName),
+				startOfMonthUtc(month), startOfMonthUtc(month.plusMonths(1)));
+	}
+
 	/**
-	 * True when a table of that name exists but is NOT an attached partition of events:
-	 * a leftover standalone table from a pass whose move hit the batch cap. This state
-	 * must route into the move-then-attach path — the plain
-	 * {@code CREATE TABLE IF NOT EXISTS ... PARTITION OF} would only emit a NOTICE and
-	 * silently skip, stranding the month detached forever.
+	 * True when a relation with the month's name exists but is NOT a child of the
+	 * {@code events} parent: a leftover standalone table from the pre-atomic
+	 * implementation (or a hand-created table). Such a table is never visible through the
+	 * parent, so it is recovered into the partition by the atomic pass above.
 	 */
-	private boolean standaloneTableExists(String partitionName) {
-		Boolean exists = jdbcTemplate.queryForObject("SELECT to_regclass(?) IS NOT NULL",
-				Boolean.class, "public." + partitionName);
-		return Boolean.TRUE.equals(exists);
+	private boolean leftoverStandaloneTableExists(String partitionName) {
+		Boolean leftover = jdbcTemplate.queryForObject("""
+				SELECT to_regclass(?) IS NOT NULL
+				   AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = to_regclass(?))""",
+				Boolean.class, "public." + partitionName, "public." + partitionName);
+		return Boolean.TRUE.equals(leftover);
+	}
+
+	/**
+	 * Recovery sweep for leftover standalone tables from the pre-atomic implementation:
+	 * a standalone table is invisible through the {@code events} parent, so its rows would
+	 * never be read or retained. Every monthly-named standalone table is fed into the same
+	 * atomic move-then-attach path (its rows are put back into the DEFAULT partition and
+	 * then moved into the new partition). The sweep is independent of the lookahead
+	 * window, so a leftover for a month that has already left the window is still
+	 * recovered.
+	 */
+	private void recoverLeftoverStandaloneTables(PhaseTotals totals) {
+		List<String> leftovers = jdbcTemplate.query("""
+				SELECT c.relname AS name
+				FROM pg_class c
+				JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE n.nspname = 'public' AND c.relkind = 'r'
+				  AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)""",
+				(resultSet, rowNum) -> resultSet.getString("name"));
+		for (String name : leftovers) {
+			if (!MONTHLY_PARTITION_NAME.matcher(name).matches()) {
+				continue; // events_default or an unrelated table: never touched here
+			}
+			YearMonth month = YearMonth.parse(name.substring("events_".length()).replace('_', '-'));
+			try {
+				ensureMissingPartition(name, month, totals);
+			}
+			catch (RuntimeException e) {
+				log.error("Partition maintenance: recovering the leftover standalone table {} failed; "
+						+ "the later leftovers and phases are still processed", name, e);
+			}
+		}
 	}
 
 	/**
@@ -542,6 +575,13 @@ public class PartitionMaintenanceService {
 	 * renders is accepted and the bound is a session-timezone-independent instant.
 	 * Returns null (with a warning, never an exception to the caller) when the literal
 	 * is not a readable timestamp; the caller then keeps the partition.
+	 *
+	 * <p><b>DateStyle assumption:</b> the literal must be in an ISO {@code DateStyle}
+	 * (PostgreSQL's default). A session with {@code DateStyle='SQL, DMY'} renders bounds
+	 * as {@code '01/10/2026 05:30:00 IST'}, which is intentionally unreadable here — the
+	 * partition is kept (never dropped on a guess) and retention stalls with a warning
+	 * until the session uses the default ISO style. The application's own connections use
+	 * the server default, so this only bites externally reconfigured sessions.
 	 */
 	static Instant parseBoundLiteral(String partitionName, String literal) {
 		String iso = literal.strip().replace(' ', 'T');

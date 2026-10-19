@@ -97,7 +97,7 @@ class PartitionMaintenanceDisabledIntegrationTest {
 		// ... and a direct pass stays a no-op too (the clock predates nothing here —
 		// the disabled check happens before any time is read).
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0, 0));
 		assertThat(monthlyPartitionNames()).hasSize(29);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(0);

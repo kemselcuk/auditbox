@@ -462,8 +462,9 @@ public final class LoadGenerator {
 	/**
 	 * Pure exit-code mapping of one run's status counts (connection failures are recorded
 	 * as status {@link #CONNECTION_ERROR}): {@code 0} only when at least one request was
-	 * completed and EVERY response status was 2xx; {@code 1} when nothing completed, a
-	 * connection failed, or any response was outside 2xx (3xx included — review F5).
+	 * completed and EVERY response status was 200 or 201 — the API's documented success
+	 * statuses (review F5: 204 and every other 2xx are unexpected here and fail the run);
+	 * {@code 1} when nothing completed, a connection failed, or any response differed.
 	 */
 	static int exitCode(Map<Integer, Integer> statusCounts) {
 		if (statusCounts.isEmpty()) {
@@ -471,8 +472,7 @@ public final class LoadGenerator {
 			return 1;
 		}
 		boolean failed = statusCounts.entrySet().stream()
-				.anyMatch(entry -> entry.getKey() == CONNECTION_ERROR
-						|| entry.getKey() < 200 || entry.getKey() > 299);
+				.anyMatch(entry -> entry.getKey() != 200 && entry.getKey() != 201);
 		return failed ? 1 : 0;
 	}
 

@@ -264,7 +264,7 @@ class PartitionMaintenanceIntegrationTest {
 		// counter and leaves the partition set exactly as the first pass left it.
 		List<String> beforeSecond = partitionNames();
 		PartitionMaintenanceService.MaintenanceSummary second = service.runMaintenance();
-		assertThat(second).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0));
+		assertThat(second).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0, 0));
 		assertThat(partitionNames()).isEqualTo(beforeSecond);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 4);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(droppedBefore + 4);
@@ -294,7 +294,7 @@ class PartitionMaintenanceIntegrationTest {
 
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0, 0));
 		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(-20)));
 		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(-16)));
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(droppedBefore + 1);
@@ -319,7 +319,7 @@ class PartitionMaintenanceIntegrationTest {
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
 		// upper == cutoff → droppable per the documented <= rule: the partition is gone.
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 0, 0));
 		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(-17)));
 		// The neighbor whose upper bound lies one instant past the cutoff is kept.
 		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(-16)));
@@ -360,13 +360,13 @@ class PartitionMaintenanceIntegrationTest {
 
 		// Pass 1: 100 + 100 + 100 — the 3-batch cap binds while rows remain.
 		PartitionMaintenanceService.MaintenanceSummary firstPass = service.runMaintenance();
-		assertThat(firstPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 300));
+		assertThat(firstPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 1, 300, 0));
 		assertThat(countEvents("retention-del-%")).isEqualTo(oldBefore - 300);
 		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED)).isEqualTo(deletedBefore + 300);
 
 		// Pass 2: 50 < batch size -> one short batch, then the loop stops.
 		PartitionMaintenanceService.MaintenanceSummary secondPass = service.runMaintenance();
-		assertThat(secondPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 50));
+		assertThat(secondPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 50, 0));
 		assertThat(countEvents("retention-del-%")).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED)).isEqualTo(deletedBefore + 350);
 
@@ -448,7 +448,7 @@ class PartitionMaintenanceIntegrationTest {
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
 		// +9 via move-then-attach, +10 and +11 via the plain path: three created partitions.
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(3, 0, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(3, 0, 0, 1));
 		for (int offset = 9; offset <= 11; offset++) {
 			assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(offset)));
 			assertPartitionBounds(partitionName(CURRENT.plusMonths(offset)), CURRENT.plusMonths(offset));
@@ -465,50 +465,38 @@ class PartitionMaintenanceIntegrationTest {
 	}
 
 	/**
-	 * The F2 batch cap: more rows in the month's range than
-	 * batch-size × max-batches-per-run means pass one moves only the capped amount and
-	 * the partition stays DETACHED (attaching with rows left in the DEFAULT partition
-	 * would fail with the very error F2 fixes); the next pass moves the remainder and
-	 * attaches — every row exactly once.
+	 * The move is atomic (review round 2, F2): there is no intermediate DETACHED state and
+	 * no batch cap for the move. 350 rows in the month's range are moved and the partition
+	 * attached in ONE pass, with every row visible through the {@code events} parent
+	 * immediately — a GET, a list query or the idempotency pre-check can never miss them.
 	 */
 	@Test
 	@Order(8)
-	void aMoveTooBigForOnePassStaysDetachedAndTheNextPassCompletesAndAttaches() {
+	void aLargeMoveCompletesAndAttachesInOnePassWithEveryRowVisible() {
 		testClock.set(scenarioClock(8, 15));
-		// 350 rows in month +10's range: 3 full batches (the cap) + a 50-row remainder.
 		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(10)));
-		insertRows(350, startOfDayUtc(CURRENT.plusMonths(10), 5), "f2-cap-");
-		assertThat(countEvents("f2-cap-%")).isEqualTo(350);
+		insertRows(350, startOfDayUtc(CURRENT.plusMonths(10), 5), "f2-move-");
+		assertThat(countEvents("f2-move-%")).isEqualTo(350);
 
 		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
 		double movedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED);
 
-		// Pass 1: the cap binds with 50 rows left -> moved 300, NOT attached.
-		PartitionMaintenanceService.MaintenanceSummary firstPass = service.runMaintenance();
-		assertThat(firstPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0));
-		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 300);
-		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(10)));
-		assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(10)))).isTrue();
-		Integer leftInDefault = jdbcTemplate.queryForObject(
-				"SELECT count(*) FROM events_default WHERE event_id LIKE 'f2-cap-%'", Integer.class);
-		assertThat(leftInDefault).isEqualTo(50);
+		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
-		// Pass 2: the 50-row remainder moves (one short batch) and the partition attaches.
-		PartitionMaintenanceService.MaintenanceSummary secondPass = service.runMaintenance();
-		assertThat(secondPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(1, 0, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(1, 0, 0, 350));
 		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(10)));
 		assertPartitionBounds(partitionName(CURRENT.plusMonths(10)), CURRENT.plusMonths(10));
-		assertThat(countEvents("f2-cap-%")).isEqualTo(350);
-		assertThat(routingPartitionOf("f2-cap-1")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
-		assertThat(routingPartitionOf("f2-cap-350")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
-		// No duplicate: 350 rows and 350 distinct ids after the two-stage move.
+		// Every row is visible through the parent, in its partition, exactly once.
+		assertThat(countEvents("f2-move-%")).isEqualTo(350);
+		assertThat(routingPartitionOf("f2-move-1")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
+		assertThat(routingPartitionOf("f2-move-350")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
 		Integer distinctIds = jdbcTemplate.queryForObject(
-				"SELECT count(DISTINCT id) FROM events WHERE event_id LIKE 'f2-cap-%'", Integer.class);
+				"SELECT count(DISTINCT id) FROM events WHERE event_id LIKE 'f2-move-%'", Integer.class);
 		assertThat(distinctIds).isEqualTo(350);
 		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 350);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 1);
 
-		jdbcTemplate.update("DELETE FROM events WHERE event_id LIKE 'f2-cap-%'");
+		jdbcTemplate.update("DELETE FROM events WHERE event_id LIKE 'f2-move-%'");
 	}
 
 	/**
@@ -525,9 +513,9 @@ class PartitionMaintenanceIntegrationTest {
 		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(9)));
 		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(10)));
 		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(11)));
-		// A standalone +9 table with a rogue NOT NULL column: the move's INSERT fails.
-		jdbcTemplate.execute("CREATE TABLE " + partitionName(CURRENT.plusMonths(9))
-				+ " (LIKE events INCLUDING DEFAULTS, rogue boolean NOT NULL)");
+		// A standalone +9 table with an unusable shape: the atomic pass's INSERT ... SELECT
+		// fails, so the whole month (detach/move/attach) rolls back.
+		jdbcTemplate.execute("CREATE TABLE " + partitionName(CURRENT.plusMonths(9)) + " (id BIGINT)");
 		assertThat(insertEvent("f2-isolation", startOfDayUtc(CURRENT.plusMonths(9), 15))).isEqualTo(1);
 
 		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
@@ -538,7 +526,7 @@ class PartitionMaintenanceIntegrationTest {
 		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
 
 		// +9 failed and stays detached; +10 and +11 were still created.
-		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(2, 0, 0));
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(2, 0, 0, 0));
 		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(9)));
 		assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(9)))).isTrue();
 		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(10)),
@@ -554,6 +542,48 @@ class PartitionMaintenanceIntegrationTest {
 		// Cleanup: the rogue table is standalone (not a partition) — dropped by hand.
 		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(9)));
 		jdbcTemplate.update("DELETE FROM events WHERE event_id = 'f2-isolation'");
+	}
+
+	/**
+	 * Leftover recovery (review round 2, F2): a standalone monthly table left by the
+	 * pre-atomic implementation is invisible through the parent; the recovery sweep
+	 * feeds it into the same atomic move-then-attach path EVEN when its month is outside
+	 * the lookahead window (far outside every test window), so its rows are never orphaned.
+	 */
+	@Test
+	@Order(10)
+	void aLeftoverStandaloneTableOutsideTheWindowIsRecoveredIntoItsPartition() {
+		testClock.set(scenarioClock(8, 15));
+		// Earlier scenarios drop window months; restore the window first so this pass only
+		// counts the leftover recovery (the pre-pass summary is discarded).
+		service.runMaintenance();
+		YearMonth outside = CURRENT.plusMonths(40); // far outside every test window
+		String name = partitionName(outside);
+		jdbcTemplate.execute("CREATE TABLE " + name + " (LIKE events INCLUDING DEFAULTS)");
+		jdbcTemplate.update("""
+				INSERT INTO %s (id, event_id, user_id, event_type, source, occurred_at,
+				                received_at, metadata, content_hash, created_at)
+				VALUES (9000001, 'f2-leftover', 'user-f2', 'payment.settled', 'core-banking', ?,
+				        now(), NULL, 'leftover-hash', now())""".formatted(name),
+				startOfDayUtc(outside, 10));
+		assertThat(existsAsStandaloneTable(name)).isTrue();
+
+		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
+		double movedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED);
+
+		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
+
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(1, 0, 0, 1));
+		assertThat(monthlyPartitionNames()).contains(name);
+		assertPartitionBounds(name, outside);
+		assertThat(existsAsStandaloneTable(name)).isFalse();
+		assertThat(countEvents("f2-leftover")).isEqualTo(1);
+		assertThat(routingPartitionOf("f2-leftover")).isEqualTo(name);
+		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 1);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 1);
+
+		jdbcTemplate.update("DELETE FROM events WHERE event_id = 'f2-leftover'");
+		jdbcTemplate.execute("DROP TABLE " + name);
 	}
 
 	// ---------------------------------------------------------------------
