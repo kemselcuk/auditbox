@@ -76,7 +76,9 @@ auditbox:
     requests-per-minute: ${RATE_LIMIT_REQUESTS_PER_MINUTE:300}
   # Retention and automatic partition maintenance (M11.2/D22): at startup and daily at
   # 03:30 server time the job creates the missing monthly partitions for the lookahead
-  # window (current month .. +lookahead), drops monthly partitions whose ENTIRE range is
+  # window (current month .. +lookahead; a month whose range already holds rows in the
+  # DEFAULT partition gets them moved into the new partition in bounded batches before
+  # it is attached — review F2), drops monthly partitions whose ENTIRE range is
   # older than the retention window (dropping a partition removes its rows BY DESIGN —
   # this is the retention mechanism, D22), and deletes older rows from the DEFAULT
   # partition in bounded batches (batch size x max batches per pass). All time math is

@@ -101,7 +101,7 @@ Components (source layout under [src/main/java/io/auditbox](src/main/java/io/aud
 |---|---|
 | `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter` + per-source `ApiKeyRegistry` (constant-time digest comparison), `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details, `RateLimiter`/`RateLimitFilter` (per-source 429s) |
 | `events` | `EventController` (POST/GET), `EventService`/`EventWriteService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
-| `retention` | `PartitionMaintenanceService` + `PartitionMaintenanceScheduler`: keeps the monthly partition window healthy and applies retention (M11.2, D22) — startup pass + daily cron, lookahead partition creation, retention drops, bounded `events_default` deletes |
+| `retention` | `PartitionMaintenanceService` + `PartitionMaintenanceScheduler`: keeps the monthly partition window healthy and applies retention (M11.2, D22) — startup pass + daily cron, lookahead partition creation (with move-then-attach for months that already have rows in `events_default`, review F2), retention drops, bounded `events_default` deletes |
 | `demo` | sample-event client and load generator (JDK only, T6.1/T11.3) |
 
 The browser demo page is a static resource ([src/main/resources/static/demo](src/main/resources/static/demo/index.html))
@@ -118,7 +118,17 @@ runs **once at application startup** (after Flyway, so the schema exists) and th
    partition is created with the standard bounds `[month start UTC, next month start
    UTC)`, so the DEFAULT partition stays the (small) exception. The DDL is built only
    from clock-derived months; an existing partition is never recreated (the pass is
-   idempotent).
+   idempotent). A month whose range **already holds rows in `events_default`** (the API
+   accepts any `occurredAt` in 0001-01-01..9999-12-31, so a client can write months
+   beyond the window) cannot be created with a plain `CREATE TABLE ... PARTITION OF` —
+   PostgreSQL rejects it while those rows are there. Such a month takes the
+   **move-then-attach** path instead (M11 review F2): the pass creates the standalone
+   table `events_YYYY_MM (LIKE events INCLUDING DEFAULTS)`, moves the range's rows out
+   of `events_default` in batches of `RETENTION_DEFAULT_DELETE_BATCH_SIZE` rows (at
+   most `RETENTION_MAX_BATCHES_PER_RUN` batches per pass), and attaches the partition
+   with the standard bounds only once the range is empty — with rows left, it stays
+   detached for this pass and the next pass continues the move. One month's failure is
+   caught and logged; the later months of the window are still processed.
 2. **Applies retention by dropping** — every monthly partition whose upper bound is
    `<=` now(UTC) − `RETENTION_MONTHS` is dropped. **Dropping a partition removes its
    rows with the table, by design: this delete IS the retention policy.** A partition
@@ -145,7 +155,9 @@ naming the property — no clamping):
 | `schedule-cron` | `RETENTION_CRON` | `0 30 3 * * *` | Spring cron of the daily pass |
 
 The pass increments the untagged counters `auditbox.retention.partitions.created`,
-`auditbox.retention.partitions.dropped` and `auditbox.retention.default.rows.deleted`
+`auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted` and
+`auditbox.retention.default.rows.moved` (the F2 move-then-attach; a partition brought
+into place by moving rows and attaching counts as created)
 (see [Observability](#observability)). Full rationale, including the **single-instance
 caveat** (every replica would run the job — disable it or stagger the cron on extra
 replicas): [docs/decisions.md](docs/decisions.md) D22.
@@ -389,10 +401,11 @@ HTTP/1.1 404
   `auditbox.events.created` (201), `auditbox.events.replayed` (200), `auditbox.events.conflicts`
   (409) and `auditbox.auth.failures` with the closed tag set `reason=missing|invalid` — the
   key itself is never a metric name, tag, or value. The rate limiter adds `auditbox.rate.limited`
-  (one increment per emitted 429, untagged — D19), and the retention job adds the three
+  (one increment per emitted 429, untagged — D19), and the retention job adds the four
   untagged counters `auditbox.retention.partitions.created`,
-  `auditbox.retention.partitions.dropped` and `auditbox.retention.default.rows.deleted`
-  (M11.2, D22).
+  `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted`
+  and `auditbox.retention.default.rows.moved` (M11.2, D22; the moved counter from
+  review F2).
 
 ```bash
 curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/actuator/metrics/auditbox.events.created
@@ -868,7 +881,7 @@ per class:
 | `AuditBoxApplicationTests` | app boots against real PostgreSQL; `/actuator/health` UP (T1.1) |
 | `EventsSchemaMigrationTest` | Flyway V1+V2 apply on a clean database; the `events` parent is RANGE-partitioned on `occurred_at` with monthly partitions + default (right bounds); PK `(occurred_at, id)`; unique index `(occurred_at, event_id)` (rejecting SQLState 23505), index set incl. non-unique `event_id`; columns/types/nullability/defaults; partition routing of rows (T2.1, M11.1/D21) |
 | `EventPartitionedIdempotencyTest` | M11.1/D21: rows route to their monthly or the default partition through the write path; GET by eventId and the list endpoint unify partitions; same eventId with DIFFERENT occurredAt → exactly one row and 409 for the loser, sequential and concurrent (the property the unique index alone can no longer give); identical retry still replays 200 |
-| `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the three retention counters move exactly with each kind of work (deltas) |
+| `PartitionMaintenanceIntegrationTest` | M11.2/D22 with a fixed injected clock: the startup pass ran once after Flyway (lookahead partitions with exact bounds + the exact expired-V2 drops); a missing lookahead partition is created with exact bounds and a second unchanged pass does nothing (idempotent); drop rules — fully expired dropped, cutoff-containing kept, upper bound exactly at the cutoff dropped (`<=`); bounded `events_default` cleanup (batch cap then stop-on-partial; rows at/after the cutoff survive in the default partition); the retention counters move exactly with each kind of work (deltas); review F2 — a month with rows in `events_default` is moved into the new partition and attached (no duplicate, later months still created, exact bounds), a move over the batch cap leaves the partition detached until the next pass completes and attaches it, and a failing month is caught per month without stopping the later months or the other phases |
 | `PartitionMaintenanceDisabledIntegrationTest` | M11.2/D22 disabled semantics: `auditbox.retention.enabled=false` makes the startup pass and a direct pass strict no-ops — the V2 window untouched, no lookahead creation, no counter increments |
 | `RetentionPropertiesTest` | M11.2/D22 config validation: months=0 / negative lookahead / zero batch size / zero max batches abort startup naming the property; disabled accepts any values (D22) |
 | `EventContentHasherTest` | canonical hash rules: key order, UTC/microsecond normalization, number equality, absent ≡ null, SHA-256/UTF-8, thread safety (T2.2) |
@@ -955,8 +968,10 @@ it. Short summary:
   retention & partition maintenance (M11.2): startup pass + daily cron; lookahead window
   (`[month start UTC, next month start UTC)`); monthly partitions older than
   `RETENTION_MONTHS` dropped — the drop removes rows BY DESIGN (this is the retention
-  policy) — and bounded batch deletes on `events_default`; disabled = strict no-op;
-  three untagged retention counters; honest single-instance caveat (see
+  policy) — and bounded batch deletes on `events_default`; a month that enters the
+  window with rows already in `events_default` gets them moved into the new partition
+  before it is attached (M11 review F2); disabled = strict no-op;
+  four untagged retention counters; honest single-instance caveat (see
   [Retention and partitions](#retention-and-partitions-d22)).
 - **D23** load generator (M11.3): a JDK-only tool (`io.auditbox.demo.LoadGenerator` +
   `scripts/load-test.sh`, no k6/Gatling) with bounded virtual-thread concurrency, a

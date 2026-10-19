@@ -92,6 +92,7 @@ class PartitionMaintenanceDisabledIntegrationTest {
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED)).isEqualTo(0);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(0);
 
 		// ... and a direct pass stays a no-op too (the clock predates nothing here —
 		// the disabled check happens before any time is read).
@@ -101,6 +102,7 @@ class PartitionMaintenanceDisabledIntegrationTest {
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(0);
 		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED)).isEqualTo(0);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(0);
 	}
 
 	// ---------------------------------------------------------------------

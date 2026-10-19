@@ -114,7 +114,10 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 4. DEFAULT partition: every API-legal occurredAt (0001-01-01..9999-12-31, D13)
 --    that falls outside the managed monthly window stays storable (D21). Rows here
---    are moved into their monthly partition by the later maintenance task.
+--    are moved into their monthly partition by the maintenance job's ensure phase
+--    (M11.2, D22; review F2): when a month with rows in this partition enters the
+--    lookahead window, the job creates the standalone monthly table, moves the
+--    range's rows into it in bounded batches and attaches the partition.
 -- ---------------------------------------------------------------------------
 CREATE TABLE events_default PARTITION OF events DEFAULT;
 

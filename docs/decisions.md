@@ -593,6 +593,27 @@ decision → rationale/alternatives.
     window keeps the V2 shape and the DEFAULT partition keeps catching only out-of-window
     values. The DDL is built exclusively from clock-derived months — never from user
     input — with bound literals pinned to `+00`.
+  - **Move-then-attach for stranded DEFAULT rows (M11 review F2):** the API accepts any
+    `occurredAt` in 0001-01-01..9999-12-31 (D13), so a client can write months beyond
+    the managed window; when such a month later enters the look-ahead window, a plain
+    `CREATE TABLE ... PARTITION OF` fails on those rows (`updated partition constraint
+    for default partition "events_default" would be violated by some row`) and used to
+    block every later month on every pass. Such a month now takes the standard
+    PostgreSQL recipe (verified live on PostgreSQL 18): create the standalone table
+    `events_YYYY_MM (LIKE events INCLUDING DEFAULTS)` if missing — the `id` column
+    attaches as a plain bigint (identity is not copied), NOT NULL constraints and the
+    `now()` defaults carry over, and no index is copied (the parent's partitioned
+    indexes stay the only owners of their names); move the range's rows out of
+    `events_default` in batches of `default-delete-batch-size` rows, at most
+    `max-batches-per-run` batches per pass (one `DELETE ... RETURNING *` → `INSERT ...
+    SELECT` CTE per batch); with rows left after the cap the partition stays detached
+    (warning logged) and the next pass continues; once the range is empty,
+    `ALTER TABLE events ATTACH PARTITION` brings it in with the standard bounds —
+    PostgreSQL 18 then creates the partition's child indexes for every parent index
+    automatically, and the parent's identity keeps assigning ids through the parent. A
+    month brought into place this way also counts as a created partition; each month's
+    failure is caught per month (later months still processed) and cannot abort the
+    other phases.
   - **Retention = partition drop:** a monthly partition whose upper bound (read from the
     PostgreSQL catalog, not derived from the name) is `<=` now(UTC) − retention months is
     dropped with `DROP TABLE`. **Dropping a partition removes its rows together with the
@@ -613,7 +634,8 @@ decision → rationale/alternatives.
   - Disabled semantics: `RETENTION_ENABLED=false` makes BOTH triggers strict no-ops — no
     DDL, no deletes, no counter increments, regardless of what the other values say.
   - Counters: untagged `auditbox.retention.partitions.created`,
-    `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted`.
+    `auditbox.retention.partitions.dropped`, `auditbox.retention.default.rows.deleted`,
+    and — counting the F2 move batches — `auditbox.retention.default.rows.moved`.
     No key material can reach a counter or a job log line (schema objects and counts
     only).
 - **Single-instance note (explicit caveat):** the job has no distributed lock — in a
@@ -633,7 +655,10 @@ decision → rationale/alternatives.
 - Evidence: integration tests in `io.auditbox.retention` — `PartitionMaintenanceIntegrationTest`
   (startup pass with a fixed clock: 9 exact drops + 4 exact creates; ensure with exact
   bounds; second-pass idempotency; the three drop rules incl. the exact-`<=` boundary;
-  batch cap 3 × 100 and stop-on-partial cleanup; delta-based counter assertions),
+  batch cap 3 × 100 and stop-on-partial cleanup; delta-based counter assertions;
+  review F2: the stranded-rows regression — moved into the new partition, attached, no
+  duplicate, later months still created via the plain path; the move batch cap —
+  detached first pass, completed and attached second pass; per-month failure isolation),
   `PartitionMaintenanceDisabledIntegrationTest` (disabled = no-op), `RetentionPropertiesTest`
   (config validation naming each property) — plus the live acceptance run with
   `RETENTION_MONTHS=2` recorded in the README/report.

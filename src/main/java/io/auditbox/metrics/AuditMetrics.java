@@ -27,7 +27,10 @@ import org.springframework.stereotype.Component;
  *       than the retention window was dropped by the job; dropping the partition removes
  *       its rows by design (this IS the retention policy, D22),</li>
  *   <li>{@code auditbox.retention.default.rows.deleted} — rows older than the retention
- *       window deleted from the DEFAULT partition in bounded batches (M11.2, D22).</li>
+ *       window deleted from the DEFAULT partition in bounded batches (M11.2, D22),</li>
+ *   <li>{@code auditbox.retention.default.rows.moved} — rows moved out of the DEFAULT
+ *       partition into a newly attached monthly partition by the ensure phase, in
+ *       bounded batches (M11 review F2).</li>
  * </ul>
  *
  * <p><code>Counter.increment()</code> keeps absolute counts — Micrometer drops increments
@@ -57,6 +60,9 @@ public class AuditMetrics {
 
 	/** Rows older than the retention window deleted from the DEFAULT partition, bounded batches (D22). */
 	public static final String RETENTION_DEFAULT_ROWS_DELETED = "auditbox.retention.default.rows.deleted";
+
+	/** Rows moved out of the DEFAULT partition into a new monthly partition, bounded batches (review F2). */
+	public static final String RETENTION_DEFAULT_ROWS_MOVED = "auditbox.retention.default.rows.moved";
 
 	/** The only tag key: completed by one of the two structural reason values below. */
 	public static final String AUTH_FAILURE_REASON_TAG = "reason";
@@ -117,5 +123,14 @@ public class AuditMetrics {
 	 */
 	public void retentionDefaultRowsDeleted(long rows) {
 		registry.counter(RETENTION_DEFAULT_ROWS_DELETED).increment(rows);
+	}
+
+	/**
+	 * Counts {@code rows} rows moved from the DEFAULT partition into a new monthly
+	 * partition by one bounded batch of the ensure phase (review F2). Batched like the
+	 * delete counter so a pass that dies mid-way still reports exactly what it moved.
+	 */
+	public void retentionDefaultRowsMoved(long rows) {
+		registry.counter(RETENTION_DEFAULT_ROWS_MOVED).increment(rows);
 	}
 }

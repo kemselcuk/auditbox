@@ -54,7 +54,11 @@ import io.micrometer.core.instrument.MeterRegistry;
  *       cutoff follows the documented {@code upper <= cutoff} rule (dropped),</li>
  *   <li>bounded DEFAULT cleanup: the batch cap, the stop on a not-full batch, and rows
  *       at/after the cutoff surviving,</li>
- *   <li>the three retention counters via before/after deltas.</li>
+ *   <li>the retention counters via before/after deltas,</li>
+ *   <li>review F2: a month whose range holds rows in the DEFAULT partition takes the
+ *       move-then-attach path (the plain CREATE would fail on those rows); a move too
+ *       big for one pass leaves the partition detached and the next pass completes and
+ *       attaches it; a failing month does not stop the later months.</li>
  * </ul>
  *
  * <p>Every scenario pins the shared fixed clock to its own instant first and asserts
@@ -414,6 +418,145 @@ class PartitionMaintenanceIntegrationTest {
 	}
 
 	// ---------------------------------------------------------------------
+	// 6. Review F2: months with rows in the DEFAULT partition (move-then-attach)
+	// ---------------------------------------------------------------------
+
+	/**
+	 * The F2 regression: the API legally accepts an occurredAt months beyond the managed
+	 * window (D13), so a month can enter the lookahead window with rows already in the
+	 * DEFAULT partition — there a plain {@code CREATE TABLE ... PARTITION OF} fails with
+	 * {@code updated partition constraint for default partition "events_default" would be
+	 * violated by some row} and used to block every later month on every pass. The pass
+	 * must instead move those rows into the new partition and attach it — exactly once,
+	 * no duplicate — while the clean later months still take the unchanged plain path.
+	 */
+	@Test
+	@Order(7)
+	void aMonthWithDefaultRowsInRangeIsMovedIntoTheNewPartitionAndLaterMonthsAreStillCreated() {
+		testClock.set(scenarioClock(8, 15));
+		// The startup window (+8..+11) is in place; strand a row in month +9 and drop
+		// all three later window partitions so this pass must rebuild them.
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(9)));
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(10)));
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(11)));
+		assertThat(insertEvent("f2-regression", startOfDayUtc(CURRENT.plusMonths(9), 15))).isEqualTo(1);
+		assertThat(routingPartitionOf("f2-regression")).isEqualTo("events_default");
+
+		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
+		double movedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED);
+
+		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
+
+		// +9 via move-then-attach, +10 and +11 via the plain path: three created partitions.
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(3, 0, 0));
+		for (int offset = 9; offset <= 11; offset++) {
+			assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(offset)));
+			assertPartitionBounds(partitionName(CURRENT.plusMonths(offset)), CURRENT.plusMonths(offset));
+			// The plain-path months were never standalone tables — no leftovers anywhere.
+			assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(offset)))).isFalse();
+		}
+		// The stranded row now lives in its month's partition, exactly once.
+		assertThat(countEvents("f2-regression")).isEqualTo(1);
+		assertThat(routingPartitionOf("f2-regression")).isEqualTo(partitionName(CURRENT.plusMonths(9)));
+		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 3);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 1);
+
+		jdbcTemplate.update("DELETE FROM events WHERE event_id = 'f2-regression'");
+	}
+
+	/**
+	 * The F2 batch cap: more rows in the month's range than
+	 * batch-size × max-batches-per-run means pass one moves only the capped amount and
+	 * the partition stays DETACHED (attaching with rows left in the DEFAULT partition
+	 * would fail with the very error F2 fixes); the next pass moves the remainder and
+	 * attaches — every row exactly once.
+	 */
+	@Test
+	@Order(8)
+	void aMoveTooBigForOnePassStaysDetachedAndTheNextPassCompletesAndAttaches() {
+		testClock.set(scenarioClock(8, 15));
+		// 350 rows in month +10's range: 3 full batches (the cap) + a 50-row remainder.
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(10)));
+		insertRows(350, startOfDayUtc(CURRENT.plusMonths(10), 5), "f2-cap-");
+		assertThat(countEvents("f2-cap-%")).isEqualTo(350);
+
+		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
+		double movedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED);
+
+		// Pass 1: the cap binds with 50 rows left -> moved 300, NOT attached.
+		PartitionMaintenanceService.MaintenanceSummary firstPass = service.runMaintenance();
+		assertThat(firstPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(0, 0, 0));
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 300);
+		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(10)));
+		assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(10)))).isTrue();
+		Integer leftInDefault = jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM events_default WHERE event_id LIKE 'f2-cap-%'", Integer.class);
+		assertThat(leftInDefault).isEqualTo(50);
+
+		// Pass 2: the 50-row remainder moves (one short batch) and the partition attaches.
+		PartitionMaintenanceService.MaintenanceSummary secondPass = service.runMaintenance();
+		assertThat(secondPass).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(1, 0, 0));
+		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(10)));
+		assertPartitionBounds(partitionName(CURRENT.plusMonths(10)), CURRENT.plusMonths(10));
+		assertThat(countEvents("f2-cap-%")).isEqualTo(350);
+		assertThat(routingPartitionOf("f2-cap-1")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
+		assertThat(routingPartitionOf("f2-cap-350")).isEqualTo(partitionName(CURRENT.plusMonths(10)));
+		// No duplicate: 350 rows and 350 distinct ids after the two-stage move.
+		Integer distinctIds = jdbcTemplate.queryForObject(
+				"SELECT count(DISTINCT id) FROM events WHERE event_id LIKE 'f2-cap-%'", Integer.class);
+		assertThat(distinctIds).isEqualTo(350);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore + 350);
+		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 1);
+
+		jdbcTemplate.update("DELETE FROM events WHERE event_id LIKE 'f2-cap-%'");
+	}
+
+	/**
+	 * F2 failure isolation: a month that cannot be ensured — here a leftover standalone
+	 * table whose shape rejects the moved rows — is caught PER MONTH: the later months of
+	 * the window are still created (plain path) and the remaining phases still run. The
+	 * stranded row waits in the DEFAULT partition for the next pass, untouched (the
+	 * failed move rolled back atomically with its batch).
+	 */
+	@Test
+	@Order(9)
+	void aFailingMonthDoesNotStopTheLaterMonthsOrTheOtherPhases() {
+		testClock.set(scenarioClock(8, 15));
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(9)));
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(10)));
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(11)));
+		// A standalone +9 table with a rogue NOT NULL column: the move's INSERT fails.
+		jdbcTemplate.execute("CREATE TABLE " + partitionName(CURRENT.plusMonths(9))
+				+ " (LIKE events INCLUDING DEFAULTS, rogue boolean NOT NULL)");
+		assertThat(insertEvent("f2-isolation", startOfDayUtc(CURRENT.plusMonths(9), 15))).isEqualTo(1);
+
+		double createdBefore = count(AuditMetrics.RETENTION_PARTITIONS_CREATED);
+		double droppedBefore = count(AuditMetrics.RETENTION_PARTITIONS_DROPPED);
+		double deletedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED);
+		double movedBefore = count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED);
+
+		PartitionMaintenanceService.MaintenanceSummary summary = service.runMaintenance();
+
+		// +9 failed and stays detached; +10 and +11 were still created.
+		assertThat(summary).isEqualTo(new PartitionMaintenanceService.MaintenanceSummary(2, 0, 0));
+		assertThat(monthlyPartitionNames()).doesNotContain(partitionName(CURRENT.plusMonths(9)));
+		assertThat(existsAsStandaloneTable(partitionName(CURRENT.plusMonths(9)))).isTrue();
+		assertThat(monthlyPartitionNames()).contains(partitionName(CURRENT.plusMonths(10)),
+				partitionName(CURRENT.plusMonths(11)));
+		// The failed move left the DEFAULT partition untouched: the row waits, exactly once.
+		assertThat(routingPartitionOf("f2-isolation")).isEqualTo("events_default");
+		assertThat(countEvents("f2-isolation")).isEqualTo(1);
+		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_CREATED)).isEqualTo(createdBefore + 2);
+		assertThat(count(AuditMetrics.RETENTION_PARTITIONS_DROPPED)).isEqualTo(droppedBefore);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_DELETED)).isEqualTo(deletedBefore);
+		assertThat(count(AuditMetrics.RETENTION_DEFAULT_ROWS_MOVED)).isEqualTo(movedBefore);
+
+		// Cleanup: the rogue table is standalone (not a partition) — dropped by hand.
+		jdbcTemplate.execute("DROP TABLE " + partitionName(CURRENT.plusMonths(9)));
+		jdbcTemplate.update("DELETE FROM events WHERE event_id = 'f2-isolation'");
+	}
+
+	// ---------------------------------------------------------------------
 	// Helpers
 	// ---------------------------------------------------------------------
 
@@ -522,6 +665,20 @@ class PartitionMaintenanceIntegrationTest {
 	private String routingPartitionOf(String eventId) {
 		return jdbcTemplate.queryForObject(
 				"SELECT tableoid::regclass::text FROM events WHERE event_id = ?", String.class, eventId);
+	}
+
+	/**
+	 * True when a non-partition table of that name exists: a leftover standalone table
+	 * from the F2 move path (an attached partition is in pg_inherits, a standalone table
+	 * is not).
+	 */
+	private boolean existsAsStandaloneTable(String name) {
+		Integer standalone = jdbcTemplate.queryForObject("""
+				SELECT count(*) FROM pg_class c
+				WHERE c.oid = to_regclass('public.' || ?) AND c.relkind = 'r'
+				  AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)""",
+				Integer.class, name);
+		return standalone != null && standalone > 0;
 	}
 
 }
