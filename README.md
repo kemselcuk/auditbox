@@ -36,7 +36,7 @@ Created in [T3 Code](https://t3.codes). Roadmap and status: [docs/plan.md](docs/
   `dev`/`test` profiles.
 
 The full behavior statement is [docs/plan.md](docs/plan.md); the rationale behind each choice
-is [docs/decisions.md](docs/decisions.md) (D1–D22).
+is [docs/decisions.md](docs/decisions.md) (D1–D23).
 
 ## What this is / is not
 
@@ -102,7 +102,7 @@ Components (source layout under [src/main/java/io/auditbox](src/main/java/io/aud
 | `config` | Spring Security filter chain: `ApiKeyAuthenticationFilter` + per-source `ApiKeyRegistry` (constant-time digest comparison), `ApiKeyProdRequirement` fail-fast guard, entry point returning Problem Details, `RateLimiter`/`RateLimitFilter` (per-source 429s) |
 | `events` | `EventController` (POST/GET), `EventService`/`EventInsertService` (write path and idempotency race), `EventQueryService` (read path, keyset), `EventContentHasher` (canonical hash), `EventCursor` (opaque cursor codec), validators, Problem Details advice |
 | `retention` | `PartitionMaintenanceService` + `PartitionMaintenanceScheduler`: keeps the monthly partition window healthy and applies retention (M11.2, D22) — startup pass + daily cron, lookahead partition creation, retention drops, bounded `events_default` deletes |
-| `demo` | sample-event client (JDK only) |
+| `demo` | sample-event client and load generator (JDK only, T6.1/T11.3) |
 
 The browser demo page is a static resource ([src/main/resources/static/demo](src/main/resources/static/demo/index.html))
 served by the app itself.
@@ -678,6 +678,144 @@ ALL CHECKS PASSED (4 scenarios): idempotency behavior (D4) reproduced end to end
 (The transcript above is a real run with two long JSON lines re-wrapped for readability; your
 own run reproduces the same shape with a fresh eventId.)
 
+## Load test
+
+Milestone 11.3 (D23) adds a **JDK-only load generator** for the events API —
+`io.auditbox.demo.LoadGenerator`, run by the thin wrapper
+[`scripts/load-test.sh`](scripts/load-test.sh). No k6, no Gatling, no new dependency: the
+same JDK `HttpClient` style as the [sample-event client](#1-sample-event-client-t61), with
+Java 21 virtual threads. Exactly `--concurrency` worker threads pull the next request from
+a shared cursor, so the reported concurrency IS the actual bound — no more requests are
+ever in flight.
+
+### Run it
+
+Two limits must be lifted for a load run (the script and the generator never bypass
+either):
+
+- **Rate limiter (D19):** 300 requests/min per source by default would 429 the run — start
+  the app with `RATE_LIMIT_REQUESTS_PER_MINUTE` raised.
+- **Connection pool (D21):** one write can hold two Hikari connections at once (the outer
+  advisory-lock transaction plus the `REQUIRES_NEW` insert), so the pool should be about
+  2 x concurrency. The default of 32 is sized for the 20-parallel test race (D21).
+
+```bash
+DB_PORT=5433 docker compose up -d db
+RATE_LIMIT_REQUESTS_PER_MINUTE=1000000 DB_PORT=5433 \
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=64 \
+  ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+Then, in a second terminal:
+
+```bash
+REQUESTS=5000 CONCURRENCY=32 ./scripts/load-test.sh
+```
+
+Environment (all optional): `BASE_URL` (default `http://localhost:8080`), `API_KEY`
+(default `local-dev-key`), `REQUESTS` (default 2000 unique events, eventIds
+`load-<run-id>-<i>`), `CONCURRENCY` (default 16), `REPLAY=1` (after the fresh wave, send
+every eventId a second time — identical content, so the second wave must come back as
+idempotent `200`s, D4), `RUN_ID` (default `<epoch-second>-<pid>`, unique per process, so
+reruns never collide) and `TIMEOUT_SECONDS` (default 10). The script preflights the public
+health endpoint, compiles once if the generator class is missing, and `exec`s the
+generator so its exit code is the script's: `0` when every request got a 2xx, `1` on a
+connection failure or any status ≥ 400, `2` on usage errors. It never starts or stops
+services.
+
+The report prints, per wave and in total: completed / wall time / throughput, the status
+distribution grouped into `200/201/409/429/5xx/other/connection errors`, and latency
+p50/p95/p99/max (linear interpolation over the recorded samples). On 429s it hints at the
+rate limiter; on connection errors at the base URL.
+
+### Real results — a local baseline, machine/stack-specific, not an SLA
+
+Context of the runs below: Apple M2 (8 cores, 16 GB RAM), macOS 26.7.1, Docker Desktop
+(29.8.1) with the containerized `postgres:18-alpine` on host port 5433 (fresh volume), the
+app on the host JVM (Temurin 21.0.8) via `spring-boot:run` with the `local` profile,
+`RATE_LIMIT_REQUESTS_PER_MINUTE=1000000`, Hikari pool 64, nothing else running. Your
+numbers will differ; the runs show the write path behaves sanely under concurrent load —
+they do not state what AuditBox "achieves" in general (D23).
+
+Real run 1 — fresh writes (5000 requests, concurrency 32):
+
+```text
+AuditBox load generator
+  base-url    : http://localhost:8080
+  run id      : 1792420268-48716  (eventIds are load-<run id>-<i>)
+  requests    : 5000 unique events
+  concurrency : 32 (max in-flight requests)
+  timeout     : 10 s per request
+  api key     : configured (not echoed back)
+
+Phase 1: fresh writes (expecting 201) — 5000 requests, 32 in flight ...
+  completed : 5000 of 5000 in 6.18 s (809.6 req/s)
+  statuses  : 201 x5000
+  latency   : p50 28.8 ms | p95 80.5 ms | p99 145.1 ms | max 799.1 ms (5000 samples)
+
+Total
+  completed : 5000 of 5000 in 6.32 s (791.0 req/s)
+  statuses  : 201 x5000
+```
+
+All 5000 rows persisted (psql against the compose database):
+
+```text
+$ docker exec auditbox-db psql -U auditbox -d auditbox -tAc \
+    "SELECT count(*) FROM events WHERE event_id LIKE 'load-1792420268-%';"
+5000
+```
+
+Real run 2 — `REPLAY=1` (2000 requests, concurrency 16): the first wave is fresh writes,
+the second resends the identical eventIds and is answered idempotently — and is roughly
+twice as fast, because the replay path skips the insert:
+
+```text
+AuditBox load generator
+  base-url    : http://localhost:8080
+  run id      : 1792420278-48744  (eventIds are load-<run id>-<i>)
+  requests    : 2000 unique events + the same 2000 replayed afterwards
+  concurrency : 16 (max in-flight requests)
+  timeout     : 10 s per request
+  api key     : configured (not echoed back)
+
+Phase 1: fresh writes (expecting 201) — 2000 requests, 16 in flight ...
+  completed : 2000 of 2000 in 2.65 s (753.4 req/s)
+  statuses  : 201 x2000
+  latency   : p50 16.2 ms | p95 43.8 ms | p99 96.8 ms | max 228.0 ms (2000 samples)
+
+Phase 2: idempotent replay of the same eventIds (expecting 200) — 2000 requests, 16 in flight ...
+  completed : 2000 of 2000 in 1.19 s (1680.4 req/s)
+  statuses  : 200 x2000
+  latency   : p50 8.5 ms | p95 18.9 ms | p99 30.1 ms | max 58.7 ms (2000 samples)
+
+Total
+  completed : 4000 of 4000 in 3.99 s (1002.0 req/s)
+  statuses  : 200 x2000, 201 x2000
+```
+
+Server-side cross-checks after both runs: `auditbox.events.created` = 7000 and
+`auditbox.events.replayed` = 2000 (`/actuator/metrics`); the `auditbox.rate.limited`
+counter never appeared — zero 429s; and the rows route into their monthly partitions:
+
+```text
+SELECT tableoid::regclass AS partition, count(*) FROM events
+WHERE event_id LIKE 'load-%' GROUP BY 1 ORDER BY 1;
+
+   partition    | count
+----------------+-------
+ events_2026_01 |  5000
+ events_2026_11 |  2000
+```
+
+Summary table:
+
+| Run | Workload | Wall | Throughput | p50 | p95 | p99 | max | Statuses |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 5000 POSTs @ 32 | 6.32 s | 791 req/s | 28.8 ms | 80.5 ms | 145.1 ms | 799.1 ms | 201 x5000 |
+| 2, phase 1 | 2000 POSTs @ 16 | 2.65 s | 753 req/s | 16.2 ms | 43.8 ms | 96.8 ms | 228.0 ms | 201 x2000 |
+| 2, phase 2 (`--replay`) | 2000 POSTs @ 16 | 1.19 s | 1680 req/s | 8.5 ms | 18.9 ms | 30.1 ms | 58.7 ms | 200 x2000 |
+
 ## Testing and evidence
 
 Run the whole suite (requires Docker for Testcontainers; no pre-started database needed):
@@ -746,6 +884,7 @@ per class:
 | `RateLimitPropertiesTest` | config validation: 0/negative aborts startup naming the property; disabled accepts any value (M10.2/D19) |
 | `RateLimitApiIntegrationTest` | real-HTTP 200/200/429 limit sequence, Retry-After ≥ 1, problem+json body, other-source pass, 401 for key-less, public health, counter delta (M10.2/D19) |
 | `SampleEventClientTest` | demo client: config parsing, base-url validation, exit codes, eventId scheme, payload determinism (T6.1) |
+| `LoadGeneratorTest` | load generator (M11.3/D23): config parsing/validation (flag ranges, run-id charset, base-url rules), the deterministic `load-<run-id>-<i>` workload with byte-identical replay payloads, status classification and exit codes, percentile math incl. single-value samples and the latency line |
 | `DemoStaticPageTest` | demo page is public, contains the expected elements, embeds no secrets; the events API stays key-protected (T6.2) |
 
 Which acceptance criterion each test proves: the **acceptance evidence matrix in
@@ -766,7 +905,7 @@ GitHub Actions (M10.3, D20); nothing auto-merges and every such PR runs the same
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D22), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D23), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -815,6 +954,11 @@ it. Short summary:
   policy) — and bounded batch deletes on `events_default`; disabled = strict no-op;
   three untagged retention counters; honest single-instance caveat (see
   [Retention and partitions](#retention-and-partitions-d22)).
+- **D23** load generator (M11.3): a JDK-only tool (`io.auditbox.demo.LoadGenerator` +
+  `scripts/load-test.sh`, no k6/Gatling) with bounded virtual-thread concurrency, a
+  deterministic `load-<run-id>-<i>` workload, `--replay` as a second idempotent wave, and
+  p50/p95/p99/max + throughput + status distribution; results are machine-specific local
+  baselines, not an SLA (see [Load test](#load-test)).
 
 ## Next steps
 
@@ -827,11 +971,11 @@ it. Short summary:
 - **M10 hardening:** per-source hashed keys with rotation landed (M10.1, D18), rate
   limiting with 429/`Retry-After` landed (M10.2, see [Rate limiting](#rate-limiting-d19)
   and D19), and dependency automation landed (M10.3, D20).
-- **M11 partitioned storage (in progress):** monthly RANGE partitioning on `occurred_at`
-  with the per-eventId advisory lock landed (M11.1, D21), and retention + automatic
-  partition maintenance landed (M11.2, see
-  [Retention and partitions](#retention-and-partitions-d22) and D22); the load test
-  (M11.3) remains.
+- **M11 partitioned storage (done):** monthly RANGE partitioning on `occurred_at` with
+  the per-eventId advisory lock landed (M11.1, D21), retention + automatic partition
+  maintenance landed (M11.2, see
+  [Retention and partitions](#retention-and-partitions-d22) and D22), and the JDK-only
+  load generator landed (M11.3, see [Load test](#load-test) and D23).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

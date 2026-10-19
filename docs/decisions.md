@@ -633,3 +633,64 @@ decision → rationale/alternatives.
   `PartitionMaintenanceDisabledIntegrationTest` (disabled = no-op), `RetentionPropertiesTest`
   (config validation naming each property) — plus the live acceptance run with
   `RETENTION_MONTHS=2` recorded in the README/report.
+
+## D23 — JDK-only load generator (M11.3)
+
+- Context: the last open M11 item is a load test of the events API. External load tools
+  (k6, Gatling, JMeter) would add a toolchain/dependency the project deliberately avoids
+  (EUR 0 budget, no new dependencies, single-service scope), and the demo package already
+  proved the JDK-only pattern (D15).
+- Decision: `io.auditbox.demo.LoadGenerator` — a standalone JDK-only tool
+  (`java.net.http.HttpClient`, hand-built JSON, Java 21 virtual threads), run directly from
+  the compiled classes or via the thin wrapper `scripts/load-test.sh` (env `BASE_URL`,
+  `API_KEY`, `REQUESTS`, `CONCURRENCY`, `REPLAY`, `RUN_ID`, `TIMEOUT_SECONDS`; a public
+  health preflight, then `exec java` so the generator's exit code is the script's — the
+  wrapper never starts or stops services).
+  - Workload: POST /api/v1/events with unique, deterministic eventIds `load-<run-id>-<i>`
+    (run id: `--run-id` or the default `<epoch-second>-<pid>`, unique per process like the
+    dedupe script). Payloads depend only on the pair `(run-id, i)` — the same determinism
+    rule as the sample client's batch (D4): four event types, three sources, 25 rotating
+    users, `occurredAt` one second per index below the run's base instant, a small metadata
+    object on every third event. `--replay` resends every eventId a second time after the
+    fresh wave and must come back as idempotent 200s. No GET phase — kept focused on the
+    write path (reads are covered by the demo page and the API tests).
+  - Bounded parallelism: exactly `--concurrency` worker virtual threads pull the next index
+    from a shared cursor, so no more than `--concurrency` requests are ever in flight —
+    the reported concurrency IS the actual bound.
+  - Measurement: per-request latency around the blocking send; per wave and in total the
+    completed count, wall time and throughput (completed / wall seconds), the status
+    distribution grouped into `200/201/409/429/5xx/other/connection errors`, and latency
+    p50/p95/p99/max over the sorted samples. The percentile math is linear interpolation
+    between closest ranks — a small pure JDK function (`percentile()`), unit tested; no
+    statistics library.
+  - Usage errors: validated flags with clear messages and the sample client's exit codes —
+    0 all 2xx, 1 connection failure or any status ≥ 400, 2 usage errors; no stack traces
+    for user errors.
+  - The generator never bypasses authentication or the rate limiter: every request carries
+    `X-API-Key` and consumes a token. Load runs start the app with a raised
+    `RATE_LIMIT_REQUESTS_PER_MINUTE` (the D19 default of 300/min would 429 them); the
+    report hints at exactly that when 429s appear.
+  - The generator is a tool, not production code: it lives in the demo package, nothing in
+    the app's request path refers to it, and it changes no API, schema or write path.
+- Pool sizing note (a D21 implication the load run made visible): one record request can
+  hold TWO Hikari connections at the same time — the outer advisory-lock transaction plus
+  the `REQUIRES_NEW` insert — so a load run must raise the pool to roughly 2 x concurrency
+  (e.g. `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=64` for concurrency 32; verified live
+  via `/actuator/metrics/hikaricp.connections.max` = 64). The default pool of 32 (D21) is
+  sized for the 20-parallel test race, not for concurrency ≥ 32.
+- Not claimed: results are machine/stack-specific (local Docker Desktop on macOS,
+  containerized PostgreSQL, one app instance on the host JVM) and are reported as a LOCAL
+  BASELINE only — not an SLA, not a general benchmark of Spring Boot or PostgreSQL, and no
+  comparison to other systems is implied.
+- Rationale: reproducible load evidence at zero dependency cost keeps the AGENTS.md
+  boundaries intact; owning the (small) measurement code keeps every reported number
+  explainable and testable instead of black-box. Rejected: k6/Gatling/JMeter (new
+  toolchain, against the stack baseline), a generator-side bypass of auth or the rate
+  limiter (would fake better numbers), and a GET phase (scope).
+- Evidence: `LoadGeneratorTest` (19 unit tests, no network — flag parsing/validation, the
+  deterministic workload, status classification, exit codes, percentile math) in the
+  default suite (294 tests green); real runs in the README "Load test" section: 5000 POSTs
+  @ 32 → all 201, 6.32 s wall, 791 req/s (p50 28.8 / p95 80.5 / p99 145.1 / max 799.1 ms);
+  2000 POSTs @ 16 with `--replay` → 201 x2000 then 200 x2000 (replay wave 1680 req/s);
+  7000 rows counted in PostgreSQL via psql; zero 429s server-side (`auditbox.rate.limited`
+  never appeared).
