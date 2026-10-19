@@ -16,6 +16,11 @@ spring:
 auditbox:
   security:
     api-keys: test-client:4c806362b613f7496abf284146efd31da90e4b16169fe001841ca17290f427c4
+  # Rate limiting (M10.2/D19) must never interfere with the other integration tests: the
+  # shared test source gets a bucket large enough that no realistic test volume exhausts
+  # it. The dedicated rate-limit scenario overrides the value itself.
+  rate-limit:
+    requests-per-minute: 1000000
 
 # The OpenAPI test reads /v3/api-docs; re-enabled here because the base configuration
 # disables springdoc (D5: docs are dev-profile-only for humans).

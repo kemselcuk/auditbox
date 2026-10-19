@@ -335,7 +335,8 @@ HTTP/1.1 404
   are exposed; key-protected like every non-health endpoint). Domain counters:
   `auditbox.events.created` (201), `auditbox.events.replayed` (200), `auditbox.events.conflicts`
   (409) and `auditbox.auth.failures` with the closed tag set `reason=missing|invalid` — the
-  key itself is never a metric name, tag, or value.
+  key itself is never a metric name, tag, or value. The rate limiter adds `auditbox.rate.limited`
+  (one increment per emitted 429, untagged — D19).
 
 ```bash
 curl -sS -H "X-API-Key: local-dev-key" http://localhost:8080/actuator/metrics/auditbox.events.created
@@ -412,6 +413,47 @@ HTTP/1.1 401
 
 - Exactly one `X-API-Key` header is expected per request; if a proxy or client emits the
   header twice, the first value wins under the current servlet-container behavior.
+
+### Rate limiting (D19)
+
+Every request authenticated with a valid key consumes one token from a per-source,
+in-memory token bucket (`RateLimitFilter` runs after authorization in the same security
+chain). One source's registered keys share the bucket: the bucket key is the authenticated
+source name. An unauthenticated request keeps its `401` and is never rate limited;
+`/actuator/health/**` and the static demo page are never limited when requested without a
+key. Every other authenticated endpoint — including `/actuator/metrics` — is limited like
+the events API.
+
+- Defaults: `RATE_LIMIT_ENABLED=true`, `RATE_LIMIT_REQUESTS_PER_MINUTE=300` — capacity of
+  each bucket is 300 tokens, refilled continuously at 300/60 = 5 requests per second, so a
+  source can burst 300 instantly and then sustain 5/second. When the limiter is enabled the
+  value must be at least 1; a lower value aborts startup naming
+  `auditbox.rate-limit.requests-per-minute` (no silent clamping). Setting
+  `RATE_LIMIT_ENABLED=false` disables limiting entirely and accepts any value.
+- Rejection (`429`): `application/problem+json` with title `Too Many Requests` and a
+  generic detail (no key material, no source name) plus a `Retry-After` header with the
+  whole seconds until at least one token is available (rounded up, always ≥ 1):
+
+```text
+HTTP/1.1 429
+Retry-After: 19
+Content-Type: application/problem+json;charset=UTF-8
+
+{"type":"about:blank","title":"Too Many Requests","status":429,
+ "detail":"Rate limit exceeded for this source. Retry after the indicated number of seconds."}
+```
+
+- Each `429` increments the untagged counters `auditbox.rate.limited` (see
+  [Observability](#observability)) — exactly once per rejection.
+- **Single instance only:** the buckets live in this process's memory, so the limit is per
+  process. A multi-instance deployment would multiply the effective limit per source and
+  would need a shared store (e.g. Redis) — deliberately out of scope (D19).
+
+```bash
+curl -sS -H "X-API-Key: rate-key-b" http://localhost:8080/actuator/metrics/auditbox.rate.limited
+# {"availableTags":[],"measurements":[{"statistic":"COUNT","value":2.0}],
+#  "name":"auditbox.rate.limited"}
+```
 
 ### Key rotation (D18)
 
@@ -632,6 +674,9 @@ per class:
 | `ApiKeySecurityTest` | 401/401/201 pattern, key echo, duplicate-header first-value, health/actuator/docs scoping, 404/405 not masked, `/logout`, OpenAPI security scheme (T5.1) |
 | `ApiKeyMatcherTest` | matcher unit rules: equality, null/blank, whitespace handling (T5.1; constant-time is a code-level property, D14) |
 | `ApiKeyProdRequirementTest` | prod fail-fast: missing/blank/whitespace key, success with a key (T5.1) |
+| `RateLimiterTest` | token bucket arithmetic with a fake clock: burst, exact Retry-After, exact interval refill, per-source isolation, rejection side effects (M10.2/D19) |
+| `RateLimitPropertiesTest` | config validation: 0/negative aborts startup naming the property; disabled accepts any value (M10.2/D19) |
+| `RateLimitApiIntegrationTest` | real-HTTP 200/200/429 limit sequence, Retry-After ≥ 1, problem+json body, other-source pass, 401 for key-less, public health, counter delta (M10.2/D19) |
 | `SampleEventClientTest` | demo client: config parsing, base-url validation, exit codes, eventId scheme, payload determinism (T6.1) |
 | `DemoStaticPageTest` | demo page is public, contains the expected elements, embeds no secrets; the events API stays key-protected (T6.2) |
 
@@ -651,7 +696,7 @@ step never fails a run; a build that stops earlier has nothing to upload): the
 ## Decisions
 
 Every design decision with context, decision and rationale is in
-[docs/decisions.md](docs/decisions.md) (D1–D18), owner-approved unless a review round changed
+[docs/decisions.md](docs/decisions.md) (D1–D19), owner-approved unless a review round changed
 it. Short summary:
 
 - **D1** event contract: `eventId`/`userId`/`eventType`/`source`/`occurredAt` required,
@@ -683,6 +728,10 @@ it. Short summary:
 - **D18** hardening M10.1: per-source SHA-256-hashed key registry (`API_KEYS`), rotation by
   listing the same source twice, deny-all when empty, prod fail-fast on zero/malformed
   entries.
+- **D19** hardening M10.2: in-memory per-source token-bucket rate limiting
+  (`auditbox.rate-limit.*`), capacity + continuous refill in requests per minute,
+  429 + `Retry-After` on the authenticated surface only, an untagged
+  `auditbox.rate.limited` counter, and the explicit single-instance caveat.
 
 ## Next steps
 
@@ -692,9 +741,9 @@ it. Short summary:
 - **Playwright E2E (done):** browser-level tests for the demo page behind a separate
   `-Pe2e` Maven profile (M9.7, D17) with a manually triggered workflow; the default
   `./mvnw verify` keeps its 227-test runtime.
-- **M10 hardening:** per-source hashed keys with rotation landed (M10.1, see
-  [Authentication](#authentication) and D18); still planned — rate limiting with
-  429/`Retry-After` and dependency automation (Renovate/Dependabot).
+- **M10 hardening:** per-source hashed keys with rotation landed (M10.1, D18) and rate
+  limiting with 429/`Retry-After` landed (M10.2, see [Rate limiting](#rate-limiting-d19)
+  and D19); still planned — dependency automation (Renovate/Dependabot).
 - **Deferred by design** (recorded in decisions, revisit only with real need): composite
   filter indexes once real query patterns justify them (D11), importer support for
   overriding `received_at` to preserve original receipt times (D11), anything the passed

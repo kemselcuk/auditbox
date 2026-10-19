@@ -440,3 +440,55 @@ decision → rationale/alternatives.
   (digest helper pinned to the documented constants), `ApiKeyProdRequirementTest`
   (blank/whitespace/zero-entries/malformed abort, valid entry starts), and the unchanged
   `ApiKeySecurityTest` real-HTTP 401/401/201 pattern.
+
+## D19 — In-memory per-source rate limiting (M10.2)
+
+- Context: M10 hardening continues (D18 keys, rate limiting, dependency automation). The
+  owner-approved scope is deliberately small: a single-instance, in-memory limiter with no
+  Redis, no new service, no new table, and no new dependency — a hand-rolled token bucket.
+- Decision: every authenticated request (key-accepted, D18 source) consumes one token from
+  a per-SOURCE token bucket; the SOURCE is the authenticated principal name, so all of a
+  source's registered keys share one bucket and are limited together. Bucket capacity =
+  `auditbox.rate-limit.requests-per-minute` and refill is continuous at
+  `requests-per-minute / 60` tokens per second, so a source can burst up to the limit
+  instantly and then sustains exactly limit/60 per request-second after that. Buckets live
+  in a `ConcurrentHashMap`; the key set is bounded by the configured sources and cannot
+  grow with attacker-chosen input.
+- Rejection: HTTP 429 as RFC 9457 Problem Details (`application/problem+json`, title
+  "Too Many Requests", a generic detail naming no key material or source) plus a
+  `Retry-After` header carrying the whole seconds (ceil, minimum 1) until at least one
+  token is available.
+- Placement: `RateLimitFilter` joins the existing security chain AFTER the authorization
+  filter, so it runs only for admitted requests and relies on the SecurityContext
+  principal — unauthenticated requests keep their 401 (never 429), and the public paths
+  (`/actuator/health/**`, `static /demo/**`) are never limited when requested without a
+  key. Requests that carry a valid key are authenticated requests and — like every other
+  authenticated request — consume a token, also when they hit an otherwise public path.
+  Non-events authenticated endpoints (e.g. `/actuator/metrics`) are limited like the rest
+  of the authenticated surface. `ERROR` dispatches are not filtered.
+- Configuration: `auditbox.rate-limit.enabled` (`RATE_LIMIT_ENABLED`, default `true`)
+  and `auditbox.rate-limit.requests-per-minute` (`RATE_LIMIT_REQUESTS_PER_MINUTE`,
+  default 300). When enabled the value must be ≥ 1: a lower value aborts startup with an
+  `IllegalStateException` naming the property — never a silent clamp. With the limiter
+  disabled any value binds but nothing is enforced. The `test` profile sets
+  `requests-per-minute: 1000000` so the existing integration tests cannot trip the
+  limiter; the dedicated rate-limit tests override it via test properties.
+- Observability: one new counter `auditbox.rate.limited`, incremented exactly once per
+  emitted 429 — without tags, so caller-side source names cannot drive the counter
+  cardinality. Existing counters and the auth-failure `reason` tags are unchanged.
+- Testing seam: `RateLimiter` takes a `LongSupplier` nanotime (a package-private test
+  constructor), so refill behavior is tested with a fake clock and no sleeps: exact
+  burst/Retry-After arithmetic, exact one-token restoration at the interval boundary
+  (`60e9 / requestsPerMinute` ns), per-source isolation, and rejection side effects.
+- Single-instance caveat, explicit: the limit is per process. A multi-instance deployment
+  (replicas behind a load balancer) would multiply the effective limit per source and
+  would need a shared store (e.g. Redis) — deliberately out of scope; revisit only with
+  real need.
+- Rationale: bounded, dependency-free protection against a single runaway credentials
+  holder; Problem Details + Retry-After give clients a machine-usable signal without
+  inventing new response shapes. In-memory (rather than user-visible tables) keeps the
+  events-service scope unchanged.
+- Evidence: `RateLimiterTest` (6 unit tests), `RateLimitPropertiesTest` (5 context-runner
+  tests), `RateLimitApiIntegrationTest` (real HTTP: 200/200/429+`Retry-After`,
+  per-source isolation, key-less 401, public health 200, counter delta) — 254 tests
+  green; live local run documented in the README "Rate limiting" section.

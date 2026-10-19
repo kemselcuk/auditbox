@@ -17,7 +17,10 @@ import org.springframework.stereotype.Component;
  *   <li>{@code auditbox.auth.failures} — tag {@code reason=missing|invalid} for a request
  *       that required the static API key and was rejected by the authentication entry point
  *       (review F2); the key value itself is never used or logged, only the structural
- *       reason.</li>
+ *       reason,</li>
+ *   <li>{@code auditbox.rate.limited} — a request rejected with 429 by the per-source rate
+ *       limiter (Milestone 10.2, D19). No tag: the source name is legitimate authenticated
+ *       data, but caller-chosen values must not drive the counter cardinality.</li>
  * </ul>
  *
  * <p><code>Counter.increment()</code> keeps absolute counts — Micrometer drops increments
@@ -35,6 +38,9 @@ public class AuditMetrics {
 	public static final String EVENTS_CONFLICTS = "auditbox.events.conflicts";
 
 	public static final String AUTH_FAILURES = "auditbox.auth.failures";
+
+	/** One request rejected with 429 by the per-source rate limiter (D19); no tags. */
+	public static final String RATE_LIMITED = "auditbox.rate.limited";
 
 	/** The only tag key: completed by one of the two structural reason values below. */
 	public static final String AUTH_FAILURE_REASON_TAG = "reason";
@@ -69,5 +75,13 @@ public class AuditMetrics {
 	 */
 	public void authFailure(String reason) {
 		registry.counter(AUTH_FAILURES, AUTH_FAILURE_REASON_TAG, reason).increment();
+	}
+
+	/**
+	 * Counts one 429 emitted by the rate limiter. Deliberately untagged: per-source
+	 * counting would let caller-chosen source names drive the counter cardinality (D19).
+	 */
+	public void rateLimited() {
+		registry.counter(RATE_LIMITED).increment();
 	}
 }

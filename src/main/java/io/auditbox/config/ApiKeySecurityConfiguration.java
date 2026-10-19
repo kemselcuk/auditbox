@@ -10,6 +10,7 @@ import io.auditbox.metrics.AuditMetrics;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import jakarta.servlet.DispatcherType;
@@ -34,6 +35,10 @@ import jakarta.servlet.DispatcherType;
  *       {@code /v3/api-docs} and {@code /swagger-ui/**} — requires the key,</li>
  *   <li>missing or wrong key &rarr; 401 Problem Details via
  *       {@link ApiKeyAuthenticationEntryPoint},</li>
+ *   <li>after authorization, {@link RateLimitFilter} (milestone 10.2, D19) limits the
+ *       authenticated (key-accepted) surface with an in-memory per-source token bucket
+ *       when {@code auditbox.rate-limit.enabled} is on; unauthenticated requests keep
+ *       their 401 and are never 429ed,</li>
  *   <li>no logout: there is nothing to log out, and the default {@code LogoutFilter} would
  *       otherwise answer {@code POST/GET /logout} without a key with a 302 redirect to
  *       {@code /login?logout} instead of requiring the key (review round 4, F2),</li>
@@ -45,7 +50,7 @@ import jakarta.servlet.DispatcherType;
  */
 @Configuration
 @EnableWebSecurity
-@EnableConfigurationProperties(ApiKeyProperties.class)
+@EnableConfigurationProperties({ ApiKeyProperties.class, RateLimitProperties.class })
 public class ApiKeySecurityConfiguration {
 
 	@Bean
@@ -54,8 +59,13 @@ public class ApiKeySecurityConfiguration {
 	}
 
 	@Bean
+	RateLimiter rateLimiter(RateLimitProperties properties) {
+		return new RateLimiter(properties);
+	}
+
+	@Bean
 	SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiKeyRegistry registry,
-			AuditMetrics metrics) throws Exception {
+			RateLimiter rateLimiter, AuditMetrics metrics) throws Exception {
 		return http
 				.csrf(csrf -> csrf.disable())
 				.logout(logout -> logout.disable())
@@ -68,6 +78,10 @@ public class ApiKeySecurityConfiguration {
 						.anyRequest().authenticated())
 				.addFilterBefore(new ApiKeyAuthenticationFilter(registry),
 						UsernamePasswordAuthenticationFilter.class)
+				// Rate limiting (M10.2/D19) AFTER authorization: only admitted requests with
+				// a real principal in the SecurityContext reach it, so unauthenticated ones
+				// keep their 401 and public paths stay unlimited (no key).
+				.addFilterAfter(new RateLimitFilter(rateLimiter, metrics), AuthorizationFilter.class)
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(new ApiKeyAuthenticationEntryPoint(metrics)))
 				.build();
